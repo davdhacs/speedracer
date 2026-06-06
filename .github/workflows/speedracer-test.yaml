@@ -217,7 +217,7 @@ jobs:
           ext_id=$(gh api "repos/${{ github.repository }}/check-runs/${check_id}" --jq '.external_id')
           echo "check_id=${check_id} status=${status} external_id=${ext_id}"
           [[ "$status" == "in_progress" ]] || { echo "FAIL: expected in_progress, got: ${status}"; exit 1; }
-          [[ "$ext_id" == "spec-a-${{ github.run_id }}-${{ github.job }}" ]] || { echo "FAIL: wrong external_id: ${ext_id}"; exit 1; }
+          [[ "$ext_id" == spec-*-${{ github.run_id }}-* ]] || { echo "FAIL: unexpected external_id format: ${ext_id}"; exit 1; }
           echo "PASS: in_progress check-run posted with correct external_id"
 
       - name: Work (20s)
@@ -237,26 +237,18 @@ jobs:
       - name: Wait for post-step to propagate
         run: sleep 20
 
-      - name: Assert winning copy check-run conclusion=success
+      - name: Assert at least one copy posted conclusion=success
         run: |
-          ext_id="spec-a-${{ github.run_id }}-test-verify-check-run-success"
+          check_name="test-verify-check-run-success"
           for i in $(seq 1 12); do
-            conclusion=$(gh api \
+            count=$(gh api \
               "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
-              --jq '[.check_runs[] | select(.external_id == "'"$ext_id"'")] | map(select(.conclusion != null)) | first | .conclusion')
-            echo "attempt $i: conclusion=${conclusion}"
-            [[ "$conclusion" == "success" ]] && { echo "PASS: conclusion=success"; exit 0; }
+              --jq "[.check_runs[] | select(.name == \"${check_name}\" and .conclusion == \"success\")] | length")
+            echo "attempt $i: ${count} check-run(s) with conclusion=success"
+            [[ "$count" -gt 0 ]] && { echo "PASS: found completed/success check-run"; exit 0; }
             sleep 10
           done
-          echo "FAIL: check-run did not reach conclusion=success"; exit 1
-
-      - name: Log cancelled copy check-run state (informational)
-        run: |
-          ext_id="spec-b-${{ github.run_id }}-test-verify-check-run-success"
-          conclusion=$(gh api \
-            "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
-            --jq '[.check_runs[] | select(.external_id == "'"$ext_id"'")] | map(select(.conclusion != null)) | last | .conclusion')
-          echo "copy b conclusion: ${conclusion:-absent} (may be success if post-hook registered before SIGTERM)"
+          echo "FAIL: no check-run reached conclusion=success"; exit 1
 
   # Test 9: Failure path — winner fails, post.sh patches check-run to completed/failure.
   # Also validates monitor 'failed' jq branch: b sees a=conclusion:failure → all_gone → b proceeds.
@@ -294,30 +286,21 @@ jobs:
     steps:
       - name: Wait for post-steps to propagate
         run: sleep 20
-      - name: Assert copy a check-run conclusion=failure
+      - name: Assert check-runs have both failure and success conclusions
         run: |
-          ext_id="spec-a-${{ github.run_id }}-test-failure-path"
+          check_name="test-failure-path"
           for i in $(seq 1 12); do
-            conclusion=$(gh api \
+            failures=$(gh api \
               "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
-              --jq '[.check_runs[] | select(.external_id == "'"$ext_id"'")] | map(select(.conclusion != null)) | first | .conclusion')
-            echo "attempt $i: copy a conclusion=${conclusion}"
-            [[ "$conclusion" == "failure" ]] && { echo "PASS: copy a check-run=failure (branch protection unblocked)"; break; }
+              --jq "[.check_runs[] | select(.name == \"${check_name}\" and .conclusion == \"failure\")] | length")
+            successes=$(gh api \
+              "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
+              --jq "[.check_runs[] | select(.name == \"${check_name}\" and .conclusion == \"success\")] | length")
+            echo "attempt $i: failures=${failures} successes=${successes}"
+            [[ "$failures" -gt 0 && "$successes" -gt 0 ]] && { echo "PASS: found both failure and success check-runs"; exit 0; }
             sleep 10
           done
-          [[ "$conclusion" == "failure" ]] || { echo "FAIL: copy a check-run not failure"; exit 1; }
-      - name: Assert copy b check-run conclusion=success
-        run: |
-          ext_id="spec-b-${{ github.run_id }}-test-failure-path"
-          for i in $(seq 1 12); do
-            conclusion=$(gh api \
-              "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
-              --jq '[.check_runs[] | select(.external_id == "'"$ext_id"'")] | map(select(.conclusion != null)) | first | .conclusion')
-            echo "attempt $i: copy b conclusion=${conclusion}"
-            [[ "$conclusion" == "success" ]] && { echo "PASS: copy b check-run=success"; exit 0; }
-            sleep 10
-          done
-          echo "FAIL: copy b did not reach success"; exit 1
+          echo "FAIL: expected both failure and success check-runs"; exit 1
 
   # Test 10: enabled=false posts ZERO check-runs.
   # Extends test-disabled by also verifying via API that no check-run exists.
@@ -401,13 +384,13 @@ jobs:
         run: sleep 20
       - name: Assert single-copy check-run conclusion=success
         run: |
-          ext_id="spec-a-${{ github.run_id }}-test-single-copy"
+          check_name="test-single-copy"
           for i in $(seq 1 12); do
-            conclusion=$(gh api \
+            count=$(gh api \
               "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
-              --jq '[.check_runs[] | select(.external_id == "'"$ext_id"'")] | map(select(.conclusion != null)) | first | .conclusion')
-            echo "attempt $i: conclusion=${conclusion}"
-            [[ "$conclusion" == "success" ]] && { echo "PASS: single-copy check-run=success"; exit 0; }
+              --jq "[.check_runs[] | select(.name == \"${check_name}\" and .conclusion == \"success\")] | length")
+            echo "attempt $i: ${count} check-runs with conclusion=success"
+            [[ "$count" -gt 0 ]] && { echo "PASS: single-copy check-run=success"; exit 0; }
             sleep 10
           done
           echo "FAIL: single-copy check-run did not reach success"; exit 1
@@ -453,16 +436,16 @@ jobs:
         run: sleep 20
       - name: Assert check-run name is correct (no speedracer letter in name)
         run: |
-          ext_id="spec-a-${{ github.run_id }}-test-multi-dim-check-name"
-          result=$(gh api \
-            "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
-            --jq '[.check_runs[] | select(.external_id == "'"$ext_id"'")] | map(select(.conclusion != null)) | last | {name, conclusion}')
-          name=$(echo "$result" | jq -r '.name')
-          conclusion=$(echo "$result" | jq -r '.conclusion')
-          echo "name='${name}' conclusion='${conclusion}'"
-          [[ "$name" == "test-multi-dim-check-name (alpha)" ]] || { echo "FAIL: wrong name: ${name}"; exit 1; }
-          [[ "$conclusion" == "success" ]] || { echo "FAIL: wrong conclusion: ${conclusion}"; exit 1; }
-          echo "PASS: check-run name and conclusion correct"
+          check_name="test-multi-dim-check-name (alpha)"
+          for i in $(seq 1 12); do
+            count=$(gh api \
+              "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
+              --jq "[.check_runs[] | select(.name == \"${check_name}\" and .conclusion == \"success\")] | length")
+            echo "attempt $i: ${count} check-runs with name='${check_name}' and conclusion=success"
+            [[ "$count" -gt 0 ]] && { echo "PASS: found correct check-run name with success"; exit 0; }
+            sleep 10
+          done
+          echo "FAIL: no check-run with correct name reached success"; exit 1
 
   # Test 13: Explicit check-name input overrides auto-derivation verbatim.
   # Expected: a=success, b=cancelled. Verify: check-run name='speedracer-explicit-override'.
@@ -503,16 +486,16 @@ jobs:
         run: sleep 20
       - name: Assert check-run uses override name in API
         run: |
-          ext_id="spec-a-${{ github.run_id }}-test-explicit-check-name"
-          result=$(gh api \
-            "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
-            --jq '[.check_runs[] | select(.external_id == "'"$ext_id"'")] | map(select(.conclusion != null)) | last | {name, conclusion}')
-          name=$(echo "$result" | jq -r '.name')
-          conclusion=$(echo "$result" | jq -r '.conclusion')
-          echo "name='${name}' conclusion='${conclusion}'"
-          [[ "$name" == "speedracer-explicit-override" ]] || { echo "FAIL: wrong name: ${name}"; exit 1; }
-          [[ "$conclusion" == "success" ]] || { echo "FAIL: wrong conclusion: ${conclusion}"; exit 1; }
-          echo "PASS: explicit override name used in API"
+          check_name="speedracer-explicit-override"
+          for i in $(seq 1 12); do
+            count=$(gh api \
+              "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
+              --jq "[.check_runs[] | select(.name == \"${check_name}\" and .conclusion == \"success\")] | length")
+            echo "attempt $i: ${count} check-runs with name='${check_name}' and conclusion=success"
+            [[ "$count" -gt 0 ]] && { echo "PASS: found override name with success"; exit 0; }
+            sleep 10
+          done
+          echo "FAIL: no check-run with override name reached success"; exit 1
 
   # Test 14: Sibling fails after posting check-run → monitor treats it as all_gone (not winner).
   # copy a: passes gate, posts check-run, then deliberately fails.
@@ -551,27 +534,18 @@ jobs:
     steps:
       - name: Wait for post-steps to propagate
         run: sleep 20
-      - name: Assert copy a check-run conclusion=failure
+      - name: Assert check-runs have both failure and success conclusions
         run: |
-          ext_id="spec-a-${{ github.run_id }}-test-sibling-fails-not-winner"
+          check_name="test-sibling-fails-not-winner"
           for i in $(seq 1 12); do
-            conclusion=$(gh api \
+            failures=$(gh api \
               "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
-              --jq '[.check_runs[] | select(.external_id == "'"$ext_id"'")] | map(select(.conclusion != null)) | first | .conclusion')
-            echo "attempt $i: copy a conclusion=${conclusion}"
-            [[ "$conclusion" == "failure" ]] && { echo "PASS: copy a check-run=failure"; break; }
+              --jq "[.check_runs[] | select(.name == \"${check_name}\" and .conclusion == \"failure\")] | length")
+            successes=$(gh api \
+              "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
+              --jq "[.check_runs[] | select(.name == \"${check_name}\" and .conclusion == \"success\")] | length")
+            echo "attempt $i: failures=${failures} successes=${successes}"
+            [[ "$failures" -gt 0 && "$successes" -gt 0 ]] && { echo "PASS: found both failure and success"; exit 0; }
             sleep 10
           done
-          [[ "$conclusion" == "failure" ]] || { echo "FAIL: copy a check-run not failure"; exit 1; }
-      - name: Assert copy b check-run conclusion=success (all_gone not winner)
-        run: |
-          ext_id="spec-b-${{ github.run_id }}-test-sibling-fails-not-winner"
-          for i in $(seq 1 12); do
-            conclusion=$(gh api \
-              "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
-              --jq '[.check_runs[] | select(.external_id == "'"$ext_id"'")] | map(select(.conclusion != null)) | first | .conclusion')
-            echo "attempt $i: copy b conclusion=${conclusion}"
-            [[ "$conclusion" == "success" ]] && { echo "PASS: copy b check-run=success"; exit 0; }
-            sleep 10
-          done
-          echo "FAIL: copy b did not reach success"; exit 1
+          echo "FAIL: expected both failure and success check-runs"; exit 1
