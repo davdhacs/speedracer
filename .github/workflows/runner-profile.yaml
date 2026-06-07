@@ -79,30 +79,41 @@ jobs:
 
       - name: Merge profiles and commit
         run: |
-          mkdir -p runner-profiles
           DATE=$(date -u +%Y-%m-%d)
 
-          # Merge all profile JSONs into a single report
-          echo "[" > "runner-profiles/${DATE}.json"
+          # Merge all profile JSONs
+          echo "[" > /tmp/merged.json
           first=true
           for f in /tmp/profiles/runner-*.json; do
             [[ -f "$f" ]] || continue
-            $first || echo "," >> "runner-profiles/${DATE}.json"
-            cat "$f" >> "runner-profiles/${DATE}.json"
+            $first || echo "," >> /tmp/merged.json
+            cat "$f" >> /tmp/merged.json
             first=false
           done
-          echo "]" >> "runner-profiles/${DATE}.json"
+          echo "]" >> /tmp/merged.json
 
-          # Generate summary
-          echo "=== Runner Profile ${DATE} ==="
-          jq -r 'group_by(.cpu) | .[] | "\(.[0].cpu): \(length) runners, avg CPU bench: \([.[].cpu_bench_ms] | add / length | round)ms"' \
-            "runner-profiles/${DATE}.json"
+          # Generate runner-pool.txt: one CPU per line, slowest first (by benchmark)
+          # Format: <avg_bench_ms> <count>/<total> <cpu_model>
+          jq -r '
+            group_by(.cpu) |
+            map({
+              cpu: .[0].cpu,
+              count: length,
+              avg_ms: ([.[].cpu_bench_ms] | add / length | round)
+            }) |
+            sort_by(-.avg_ms) |
+            .[] |
+            "\(.avg_ms)ms \(.count)/\(input_length) \(.cpu)"
+          ' /tmp/merged.json > runner-pool.txt
 
-          # Commit if changed
+          echo "# Runner pool profile — updated ${DATE}" | cat - runner-pool.txt > /tmp/pool.txt
+          mv /tmp/pool.txt runner-pool.txt
+
+          echo "=== runner-pool.txt ==="
+          cat runner-pool.txt
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add runner-profiles/
-          git diff --cached --quiet || git commit -m "data: runner profile ${DATE}
-
-          $(jq -r 'group_by(.cpu) | .[] | "\(.[0].cpu): \(length)/\(input_length) (\(length * 100 / input_length)%)"' "runner-profiles/${DATE}.json" 2>/dev/null || echo "(summary failed)")"
+          git add runner-pool.txt
+          git diff --cached --quiet || git commit -m "data: runner pool profile ${DATE}"
           git push || echo "::warning::Failed to push profile data"
