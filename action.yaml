@@ -44,7 +44,7 @@ runs:
         # Load slow CPU pattern: caller override > profiler data > hardcoded fallback
         SLOW_PATTERN="${{ inputs.slow-cpu-pattern }}"
         if [[ -z "$SLOW_PATTERN" && -f "${GITHUB_ACTION_PATH}/runner-pool.tsv" ]]; then
-          SLOW_PATTERN=$(grep -v '^#' "${GITHUB_ACTION_PATH}/runner-pool.tsv" | head -1 | cut -f1)
+          SLOW_PATTERN=$(grep -v '^#' "${GITHUB_ACTION_PATH}/runner-pool.tsv" | head -1 | cut -f1 || true)
           echo "Using profiler slow-cpu-pattern: ${SLOW_PATTERN}"
         fi
         [[ -z "$SLOW_PATTERN" ]] && SLOW_PATTERN="7763" && echo "Using hardcoded fallback: ${SLOW_PATTERN}"
