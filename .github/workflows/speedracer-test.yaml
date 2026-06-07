@@ -58,6 +58,8 @@ jobs:
       - name: Work (60s — b killed at ~25s via regular step SIGTERM → failure)
         run: sleep 60
 
+      - run: touch /tmp/speedracer-success
+
       - name: Monitor log
         if: always()
         run: cat /tmp/direct-monitor.log || echo "(no log)"
@@ -76,6 +78,9 @@ jobs:
           slow-cpu-pattern: NEVER_MATCH_THIS
       - name: Work (60s)
         run: sleep 60
+
+      - run: touch /tmp/speedracer-success
+
       - name: Monitor log
         if: always()
         run: cat /tmp/speedracer-monitor.log || echo "(no log)"
@@ -93,6 +98,9 @@ jobs:
           slow-cpu-pattern: NEVER_MATCH_THIS
       - name: Work (90s)
         run: sleep 90
+
+      - run: touch /tmp/speedracer-success
+
       - name: Monitor log
         if: always()
         run: cat /tmp/speedracer-monitor.log || echo "(no log)"
@@ -116,6 +124,9 @@ jobs:
           slow-cpu-pattern: ${{ contains(fromJSON('["a","b"]'), matrix.speedracer) && steps.cpu.outputs.model || 'NEVER_MATCH_THIS' }}
       - name: Work
         run: sleep 10
+
+      - run: touch /tmp/speedracer-success
+
       - name: Monitor log
         if: always()
         run: cat /tmp/speedracer-monitor.log || echo "(no log)"
@@ -139,6 +150,9 @@ jobs:
           slow-cpu-pattern: ${{ matrix.speedracer == 'a' && steps.cpu.outputs.model || 'NEVER_MATCH_THIS' }}
       - name: Work
         run: sleep 5
+
+      - run: touch /tmp/speedracer-success
+
       - name: Monitor log
         if: always()
         run: cat /tmp/speedracer-monitor.log || echo "(no log)"
@@ -171,6 +185,9 @@ jobs:
           slow-cpu-pattern: NEVER_MATCH_THIS
       - name: Work (2s — completes before monitor's initial sleep)
         run: sleep 2
+
+      - run: touch /tmp/speedracer-success
+
       - name: Monitor log
         if: always()
         run: cat /tmp/speedracer-monitor.log || echo "(no log)"
@@ -188,6 +205,9 @@ jobs:
           slow-cpu-pattern: NEVER_MATCH_THIS
       - name: Work (120s)
         run: sleep 120
+
+      - run: touch /tmp/speedracer-success
+
       - name: Monitor log
         if: always()
         run: cat /tmp/speedracer-monitor.log || echo "(no log)"
@@ -224,6 +244,8 @@ jobs:
 
       - name: Work (20s)
         run: sleep 20
+
+      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -416,6 +438,9 @@ jobs:
           echo "PASS: check-name correctly derived"
       - name: Work (60s)
         run: sleep 60
+
+      - run: touch /tmp/speedracer-success
+
       - name: Monitor log
         if: always()
         run: cat /tmp/speedracer-monitor.log || echo "(no log)"
@@ -466,6 +491,9 @@ jobs:
           echo "PASS: explicit check-name stored verbatim"
       - name: Work (60s)
         run: sleep 60
+
+      - run: touch /tmp/speedracer-success
+
       - name: Monitor log
         if: always()
         run: cat /tmp/speedracer-monitor.log || echo "(no log)"
