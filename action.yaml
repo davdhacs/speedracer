@@ -24,9 +24,9 @@ inputs:
     required: false
     default: ''
   slow-cpu-pattern:
-    description: 'Substring of CPU model name that marks a slow runner'
+    description: 'Substring of CPU model name that marks a slow runner. Default is auto-set from runner-pool.sh (updated weekly by the profiler).'
     required: false
-    default: '7763'
+    default: ''
   enabled:
     description: 'Set to false to disable speedracer — all copies run normally'
     required: false
@@ -41,6 +41,14 @@ runs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
+        # Load slow CPU pattern: caller override > profiler data > hardcoded fallback
+        SLOW_PATTERN="${{ inputs.slow-cpu-pattern }}"
+        if [[ -z "$SLOW_PATTERN" && -f "${GITHUB_ACTION_PATH}/runner-pool.tsv" ]]; then
+          SLOW_PATTERN=$(grep -v '^#' "${GITHUB_ACTION_PATH}/runner-pool.tsv" | head -1 | cut -f1)
+          echo "Using profiler slow-cpu-pattern: ${SLOW_PATTERN}"
+        fi
+        [[ -z "$SLOW_PATTERN" ]] && SLOW_PATTERN="7763" && echo "Using hardcoded fallback: ${SLOW_PATTERN}"
+
         if [[ "${{ inputs.enabled }}" != 'true' ]]; then
           echo "Speedracer disabled — this copy always runs."
           exit 0
@@ -81,7 +89,7 @@ runs:
         echo "cpu=${cpu:-unknown} copy=${MY_COPY} last=${LAST_COPY}"
 
         # ── 1. CPU check ────────────────────────────────────────────────────
-        if [[ "$MY_COPY" != "$LAST_COPY" && "$cpu" == *"${{ inputs.slow-cpu-pattern }}"* ]]; then
+        if [[ "$MY_COPY" != "$LAST_COPY" && "$cpu" == *"${SLOW_PATTERN}"* ]]; then
           echo "::warning::Slow runner (${cpu}) — delegating to next copy."
           # Do NOT post the in_progress check-run — siblings would see it and
           # defer to this copy, but this copy is about to die.

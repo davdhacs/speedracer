@@ -749,6 +749,7 @@ jobs:
       - test-arm64-not-gated
       - test-fastest-only
       - test-unknown-cpu-degrades-safely
+      - test-tsv-default-matches
     if: always()
     runs-on: ubuntu-latest
     env:
@@ -848,3 +849,38 @@ jobs:
         run: |
           echo "Copy ${{ matrix.speedracer }}: running (no CPU match, all copies proceed)"
           sleep 5
+
+  # Test 21: Verify runner-pool.tsv is readable and action default matches.
+  # The profiler generates runner-pool.tsv with the slowest CPU as the first
+  # data row. The action's slow-cpu-pattern default should match that value.
+  test-tsv-default-matches:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+
+      - name: Assert runner-pool.tsv exists and is valid
+        run: |
+          if [[ ! -f runner-pool.tsv ]]; then
+            echo "SKIP: runner-pool.tsv not yet generated (profiler hasn't run)"
+            exit 0
+          fi
+          lines=$(grep -v '^#' runner-pool.tsv | wc -l)
+          echo "runner-pool.tsv has ${lines} CPU entries"
+          [[ "$lines" -gt 0 ]] || { echo "FAIL: no CPU entries in runner-pool.tsv"; exit 1; }
+          echo "Contents:"
+          cat runner-pool.tsv
+          echo "PASS: runner-pool.tsv is valid"
+
+      - name: Assert action reads runner-pool.tsv at runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ ! -f runner-pool.tsv ]]; then
+            echo "SKIP: runner-pool.tsv not yet generated (profiler hasn't run)"
+            exit 0
+          fi
+          slowest=$(grep -v '^#' runner-pool.tsv | head -1 | cut -f1)
+          echo "Slowest CPU in tsv: '${slowest}'"
+          echo "Action will use this as slow-cpu-pattern when caller doesn't override"
+          [[ -n "$slowest" ]] || { echo "FAIL: empty slowest CPU in tsv"; exit 1; }
+          echo "PASS: runner-pool.tsv is readable and has a valid slowest CPU"

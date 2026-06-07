@@ -117,20 +117,8 @@ jobs:
           echo "=== runner-pool.tsv ==="
           cat runner-pool.tsv
 
-          # Update slow-cpu-pattern default in action.yaml to the slowest CPU
-          SLOWEST=$(grep -v '^#' runner-pool.tsv | head -1 | cut -f1)
-          if [[ -n "$SLOWEST" ]]; then
-            CURRENT=$(grep "default: " action.yaml | grep -A1 "slow-cpu-pattern" | tail -1 | sed "s/.*default: '//;s/'//")
-            if [[ "$SLOWEST" != "$CURRENT" ]]; then
-              sed -i "s/default: '${CURRENT}'/default: '${SLOWEST}'/" action.yaml
-              echo "Updated slow-cpu-pattern default: '${CURRENT}' → '${SLOWEST}'"
-            else
-              echo "slow-cpu-pattern default unchanged: '${CURRENT}'"
-            fi
-          fi
-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add runner-pool.tsv action.yaml
+          git add runner-pool.tsv
           git diff --cached --quiet || git commit -m "data: runner pool profile ${DATE}"
           git push || echo "::warning::Failed to push profile data"
