@@ -81,7 +81,10 @@ runs:
         echo "cpu=${cpu:-unknown} copy=${MY_COPY} last=${LAST_COPY}"
 
         # ── 1. CPU check ────────────────────────────────────────────────────
-        if [[ "$MY_COPY" != "$LAST_COPY" && "$cpu" == *"${{ inputs.slow-cpu-pattern }}"* ]]; then
+        # Skip on ARM64 — arm runners are virtualized on EPYC hosts and
+        # /proc/cpuinfo shows the host CPU, not the virtualized arch.
+        # RUNNER_ARCH is 'ARM64' on arm runners, 'X64' on amd64.
+        if [[ "${RUNNER_ARCH}" != "ARM64" && "$MY_COPY" != "$LAST_COPY" && "$cpu" == *"${{ inputs.slow-cpu-pattern }}"* ]]; then
           echo "::warning::Slow runner (${cpu}) — delegating to next copy."
           # Do NOT post the in_progress check-run — siblings would see it and
           # defer to this copy, but this copy is about to die.

@@ -701,3 +701,32 @@ jobs:
             sleep 10
           done
           echo "FAIL: no success check-run — last-copy was killed by stale in_progress"; exit 1
+
+  # Test 18: ARM64 runner must never be CPU-gated.
+  # arm64 runners report host EPYC CPU in /proc/cpuinfo (virtualized).
+  # Without RUNNER_ARCH guard, the CPU check would false-positive gate them.
+  # Uses actual CPU model as slow pattern — must NOT trigger on ARM64.
+  # Expected: a=success (arm64 skips CPU gate regardless of CPU model).
+  test-arm64-not-gated:
+    strategy:
+      matrix:
+        speedracer: [a]
+    runs-on: ubuntu-24.04-arm
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - name: Read CPU model (will be used as slow pattern)
+        id: cpu
+        run: |
+          model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs || true)
+          arch="${RUNNER_ARCH}"
+          echo "model=${model:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "CPU: ${model:-unknown}, RUNNER_ARCH: ${arch}"
+      - uses: ./
+        with:
+          slow-cpu-pattern: ${{ steps.cpu.outputs.model }}
+      - name: Assert we reached work (not gated)
+        run: |
+          echo "PASS: arm64 runner was not CPU-gated despite matching slow pattern"
+          echo "RUNNER_ARCH=${RUNNER_ARCH}"
