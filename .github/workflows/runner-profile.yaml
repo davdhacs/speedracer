@@ -1,0 +1,108 @@
+name: Runner Profile
+# Scheduled profiling of the GHA runner pool. Runs a quick benchmark on
+# multiple runners and commits the results to runner-profiles/ in the repo.
+# This data shows what CPU variants are available and how fast each is,
+# so slow-cpu-pattern can be tuned based on real measurements.
+on:
+  schedule:
+    - cron: '37 9 * * 1'  # weekly Monday 9:37 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  profile:
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Profile runner
+        id: profile
+        run: |
+          cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)
+          cores=$(nproc)
+          mem_mb=$(awk '/MemTotal/{printf "%.0f", $2/1024}' /proc/meminfo)
+
+          # Quick disk benchmark (1s)
+          disk_write=$(dd if=/dev/zero of=/tmp/bench bs=1M count=256 conv=fdatasync 2>&1 | awk '/copied/{print $(NF-1)}')
+
+          # Quick CPU benchmark (sysbench-like: compute primes)
+          cpu_start=$(date +%s%3N)
+          for i in $(seq 1 5000); do factor $((i * 31337)) > /dev/null; done
+          cpu_ms=$(( $(date +%s%3N) - cpu_start ))
+
+          echo "cpu=${cpu}" >> "$GITHUB_OUTPUT"
+          echo "cores=${cores}" >> "$GITHUB_OUTPUT"
+          echo "mem_mb=${mem_mb}" >> "$GITHUB_OUTPUT"
+          echo "disk_write=${disk_write}" >> "$GITHUB_OUTPUT"
+          echo "cpu_bench_ms=${cpu_ms}" >> "$GITHUB_OUTPUT"
+          echo "runner_name=${RUNNER_NAME}" >> "$GITHUB_OUTPUT"
+          echo "runner_arch=${RUNNER_ARCH}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+          echo "CPU: ${cpu} | Cores: ${cores} | Mem: ${mem_mb}MB | Disk: ${disk_write} MB/s | CPU bench: ${cpu_ms}ms"
+
+      - name: Write profile
+        run: |
+          mkdir -p /tmp/profiles
+          cat > "/tmp/profiles/runner-${{ matrix.copy }}.json" << PROFILE
+          {
+            "date": "${{ steps.profile.outputs.date }}",
+            "cpu": "${{ steps.profile.outputs.cpu }}",
+            "cores": ${{ steps.profile.outputs.cores }},
+            "mem_mb": ${{ steps.profile.outputs.mem_mb }},
+            "disk_write_mbs": "${{ steps.profile.outputs.disk_write }}",
+            "cpu_bench_ms": ${{ steps.profile.outputs.cpu_bench_ms }},
+            "runner_name": "${{ steps.profile.outputs.runner_name }}",
+            "runner_arch": "${{ steps.profile.outputs.runner_arch }}"
+          }
+          PROFILE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: profile-${{ matrix.copy }}
+          path: /tmp/profiles/
+
+  commit-profiles:
+    needs: profile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/profiles
+          merge-multiple: true
+
+      - name: Merge profiles and commit
+        run: |
+          mkdir -p runner-profiles
+          DATE=$(date -u +%Y-%m-%d)
+
+          # Merge all profile JSONs into a single report
+          echo "[" > "runner-profiles/${DATE}.json"
+          first=true
+          for f in /tmp/profiles/runner-*.json; do
+            [[ -f "$f" ]] || continue
+            $first || echo "," >> "runner-profiles/${DATE}.json"
+            cat "$f" >> "runner-profiles/${DATE}.json"
+            first=false
+          done
+          echo "]" >> "runner-profiles/${DATE}.json"
+
+          # Generate summary
+          echo "=== Runner Profile ${DATE} ==="
+          jq -r 'group_by(.cpu) | .[] | "\(.[0].cpu): \(length) runners, avg CPU bench: \([.[].cpu_bench_ms] | add / length | round)ms"' \
+            "runner-profiles/${DATE}.json"
+
+          # Commit if changed
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add runner-profiles/
+          git diff --cached --quiet || git commit -m "data: runner profile ${DATE}
+
+          $(jq -r 'group_by(.cpu) | .[] | "\(.[0].cpu): \(length)/\(input_length) (\(length * 100 / input_length)%)"' "runner-profiles/${DATE}.json" 2>/dev/null || echo "(summary failed)")"
+          git push || echo "::warning::Failed to push profile data"
