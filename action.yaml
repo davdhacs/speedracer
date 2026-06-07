@@ -4,18 +4,17 @@ description: >
   [a, b, c, d]) as the LAST matrix dimension and call this as the first
   step — nothing else needed.
 
-  Copy 'a' is the fallback — it never aborts due to slow CPU alone.
-  Instead, slow copy 'a' waits to see if any fast sibling exists.
-  If a fast sibling posts a signal, 'a' defers to it and cancels.
-  If no fast sibling appears, 'a' proceeds (it's the only option).
+  Higher-lettered copies have priority (d > c > b > a). Each copy checks
+  its CPU — slow runners abort (except copy 'a', the fallback). Fast
+  copies post an in_progress check-run, then poll for higher-lettered
+  siblings. If a higher sibling already posted, this copy cancels itself.
 
-  Other copies (b/c/d) abort immediately on slow CPU.
-  Fast copies post an in_progress check-run, then poll for lower-lettered
-  siblings. If a lower sibling already posted, this copy is a duplicate
-  and cancels itself.
+  Copy 'a' is always the fallback — it never aborts due to slow CPU.
+  If a fast sibling exists, 'a' defers to it. If all siblings are slow,
+  'a' proceeds on slow hardware (the only option).
 
   All cancellations happen within the composite action step, producing
-  'cancelled' status (not 'failure'), so fail-fast cascades are safe.
+  'cancelled' status (not 'failure').
 
 inputs:
   check-name:
@@ -82,70 +81,45 @@ runs:
 
         EXT_ID="spec-${MY_COPY}-${RUN_ID}-${CHECK_NAME}"
 
-        # ── Non-fallback copies (b/c/d): slow = abort immediately ───────────
+        # ── 1. CPU check ────────────────────────────────────────────────────
+        # Copy 'a' is the fallback — never aborts. All others abort on slow CPU.
         if [[ "$MY_COPY" != "a" && "$IS_SLOW" == "true" ]]; then
           echo "::warning::Slow runner (${cpu}) — aborting."
           kill -TERM "$PPID"
           sleep 600
         fi
 
-        # ── Fallback copy (a): slow = wait for a fast sibling ───────────────
+        # ── 2. Post in_progress check-run ───────────────────────────────────
+        # Copy 'a' on slow: don't post (would cause fast siblings to defer)
         if [[ "$MY_COPY" == "a" && "$IS_SLOW" == "true" ]]; then
-          echo "Copy a: slow runner, waiting for fast siblings..."
           printf '' > /tmp/speedracer-check-id
-          printf '%s\n' "${CHECK_NAME}" > /tmp/speedracer-check-name
-          printf '%s\n' "${MY_COPY}" > /tmp/speedracer-copy
-
-          # Poll for any sibling's in_progress check-run. If found, a fast
-          # sibling exists — defer to it. If not found after timeout, no fast
-          # sibling exists — proceed as fallback on slow hardware.
-          sleep $(( RANDOM % 2 + 5 ))
-          deadline=$(( $(date +%s) + 15 ))
-          while [[ $(date +%s) -lt $deadline ]]; do
-            found=$(gh api \
-              "repos/${REPO}/commits/${{ github.sha }}/check-runs?per_page=100&filter=all" \
-              --jq "[.check_runs[] | select(.name == \"${CHECK_NAME}\" and .external_id != \"${EXT_ID}\" and (.status == \"in_progress\" or .conclusion == \"success\"))] | length")
-            echo "[$(date -u +%H:%M:%S)] fast siblings: ${found}"
-            if [[ "$found" -gt 0 ]]; then
-              echo "Fast sibling found — deferring."
-              kill -TERM "$PPID"
-              sleep 600
-            fi
-            sleep 2
-          done
-          echo "No fast siblings found — proceeding as slow fallback."
-          exit 0
+        else
+          check_id=$(gh api repos/"${REPO}"/check-runs \
+            -f name="${CHECK_NAME}" \
+            -f head_sha="${{ github.sha }}" \
+            -f status=in_progress \
+            -f external_id="${EXT_ID}" \
+            --jq '.id')
+          printf '%s\n' "${check_id:-}" > /tmp/speedracer-check-id
+          echo "Posted in_progress check-run ${check_id} (${EXT_ID})"
         fi
-
-        # ── Fast runner (any copy): post signal + poll for lower siblings ────
-        check_id=$(gh api repos/"${REPO}"/check-runs \
-          -f name="${CHECK_NAME}" \
-          -f head_sha="${{ github.sha }}" \
-          -f status=in_progress \
-          -f external_id="${EXT_ID}" \
-          --jq '.id')
-        printf '%s\n' "${check_id:-}" > /tmp/speedracer-check-id
         printf '%s\n' "${CHECK_NAME}" > /tmp/speedracer-check-name
         printf '%s\n' "${MY_COPY}" > /tmp/speedracer-copy
-        echo "Posted in_progress check-run ${check_id} (${EXT_ID})"
 
-        # Copy a on fast: no siblings to defer to — proceed immediately.
-        if [[ "$MY_COPY" == "a" ]]; then
-          echo "Copy a: fast runner, proceeding."
-          exit 0
-        fi
-
-        # Copies b/c/d on fast: poll for lower-lettered siblings.
+        # ── 3. Poll for higher-lettered siblings ────────────────────────────
+        # Higher letters have priority: d > c > b > a.
+        # Each copy watches for siblings with HIGHER letters that posted.
+        # If found → this copy is lower priority → cancel.
         case "$MY_COPY" in
-          b) WATCH_IDS="spec-a-${RUN_ID}-${CHECK_NAME}" ;;
-          c) WATCH_IDS="spec-a-${RUN_ID}-${CHECK_NAME}|spec-b-${RUN_ID}-${CHECK_NAME}" ;;
-          d) WATCH_IDS="spec-a-${RUN_ID}-${CHECK_NAME}|spec-b-${RUN_ID}-${CHECK_NAME}|spec-c-${RUN_ID}-${CHECK_NAME}" ;;
+          a) WATCH_IDS="spec-b-${RUN_ID}-${CHECK_NAME}|spec-c-${RUN_ID}-${CHECK_NAME}|spec-d-${RUN_ID}-${CHECK_NAME}" ;;
+          b) WATCH_IDS="spec-c-${RUN_ID}-${CHECK_NAME}|spec-d-${RUN_ID}-${CHECK_NAME}" ;;
+          c) WATCH_IDS="spec-d-${RUN_ID}-${CHECK_NAME}" ;;
           *) WATCH_IDS="" ;;
         esac
 
         if [[ -n "$WATCH_IDS" ]]; then
           IFS='|' read -ra _sids <<< "$WATCH_IDS"
-          echo "Polling for siblings (${WATCH_IDS})..."
+          echo "Polling for higher-priority siblings..."
           sleep $(( RANDOM % 2 + 5 ))
 
           deadline=$(( $(date +%s) + 15 ))
@@ -157,7 +131,7 @@ runs:
               found=$(echo "$response" | jq -r --arg sid "$sid" \
                 '[.check_runs[] | select(.external_id == $sid) | select(.status == "in_progress" or .conclusion == "success")] | length')
               if [[ "$found" -gt 0 ]]; then
-                echo "Sibling ${sid} is running — cancelling this copy."
+                echo "Higher-priority sibling ${sid} is running — cancelling this copy."
                 kill -TERM "$PPID"
                 sleep 600
               fi
@@ -165,7 +139,7 @@ runs:
 
             sleep 2
           done
-          echo "No lower-lettered siblings found — proceeding."
+          echo "No higher-priority siblings found — proceeding."
         fi
 
         echo "Speedracer ready — proceeding to work."
