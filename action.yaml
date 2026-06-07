@@ -6,8 +6,9 @@ description: >
 
   Copy 'a' is the fallback — it always runs regardless of CPU speed.
   On a fast runner, 'a' posts an in_progress check-run as a signal.
-  Other copies (b/c/d) check their CPU speed and monitor for 'a's signal.
-  If 'a' is fast, duplicates kill themselves within seconds.
+  Other copies (b/c/d) check their CPU, then poll for 'a's signal.
+  If 'a' is fast, duplicates cancel themselves within the composite
+  action step (producing 'cancelled' status, not 'failure').
 
   Post-step resolves the check-run on job exit — POSTs completed/success
   on success, PATCHes to completed/failure on failure.
@@ -77,15 +78,12 @@ runs:
 
         EXT_ID="spec-${MY_COPY}-${RUN_ID}-${CHECK_NAME}"
 
-        # ── Copy 'a' is the fallback — always runs, never monitors ──────────
+        # ── Copy 'a' is the fallback — always runs, never polls ─────────────
         if [[ "$MY_COPY" == "a" ]]; then
           if [[ "$IS_SLOW" == "true" ]]; then
-            # Slow runner — run as fallback but do NOT post in_progress.
-            # Other copies won't see a signal and will proceed normally.
             echo "Copy a: slow runner, running as silent fallback"
             printf '' > /tmp/speedracer-check-id
           else
-            # Fast runner — post in_progress so other copies can detect us.
             check_id=$(gh api repos/"${REPO}"/check-runs \
               -f name="${CHECK_NAME}" \
               -f head_sha="${{ github.sha }}" \
@@ -101,15 +99,14 @@ runs:
           exit 0
         fi
 
-        # ── Copies b/c/d: CPU gate + monitor ────────────────────────────────
+        # ── Copies b/c/d: CPU gate ──────────────────────────────────────────
         if [[ "$IS_SLOW" == "true" ]]; then
           echo "::warning::Slow runner (${cpu}) — delegating to another copy."
           kill -TERM "$PPID"
-          # Keep bash alive in composite-action mode for 'cancelled' status
           sleep 600
         fi
 
-        # Fast runner — post in_progress and start monitor
+        # Fast runner — post in_progress check-run
         check_id=$(gh api repos/"${REPO}"/check-runs \
           -f name="${CHECK_NAME}" \
           -f head_sha="${{ github.sha }}" \
@@ -121,7 +118,10 @@ runs:
         printf '%s\n' "${MY_COPY}" > /tmp/speedracer-copy
         echo "Posted in_progress check-run ${check_id} (${EXT_ID})"
 
-        # Monitor: watch for copy a's in_progress (and lower-lettered siblings)
+        # ── Poll for lower-lettered siblings within the composite step ──────
+        # Blocking poll: if a sibling posted in_progress, this copy is a
+        # duplicate. SIGTERM during the composite step → 'cancelled' (not
+        # 'failure'), so fail-fast won't cascade.
         case "$MY_COPY" in
           b) WATCH_IDS="spec-a-${RUN_ID}-${CHECK_NAME}" ;;
           c) WATCH_IDS="spec-a-${RUN_ID}-${CHECK_NAME}|spec-b-${RUN_ID}-${CHECK_NAME}" ;;
@@ -130,35 +130,30 @@ runs:
         esac
 
         if [[ -n "$WATCH_IDS" ]]; then
-          nohup bash -c '
-            sleep $(( RANDOM % 2 + 5 ))
-            REPO="'"${REPO}"'"
-            SHA="${{ github.sha }}"
-            WATCH_IDS="'"${WATCH_IDS}"'"
-            MY_COPY="'"${MY_COPY}"'"
-            deadline=$(( $(date +%s) + 600 ))
-            while [[ $(date +%s) -lt $deadline ]]; do
-              response=$(gh api \
-                "repos/${REPO}/commits/${SHA}/check-runs?per_page=100&filter=all")
-              total=$(echo "$response" | jq ".check_runs | length")
-              echo "[$(date -u +%H:%M:%S)] poll: ${total} check-runs on SHA"
-              IFS="|" read -ra _sids <<< "${WATCH_IDS}"; for sid in "${_sids[@]}"; do
-                found=$(echo "$response" | jq -r --arg sid "$sid" \
-                  "[.check_runs[] | select(.external_id == \$sid) | select(.status == \"in_progress\" or .conclusion == \"success\")] | length")
-                echo "[$(date -u +%H:%M:%S)] ${sid}: found=${found}"
-                if [[ "$found" -gt 0 ]]; then
-                  echo "[$(date -u +%H:%M:%S)] sibling ${sid} is running — copy ${MY_COPY} is a duplicate."
-                  touch /tmp/speedracer-killed
-                  kill -TERM '"$PPID"'
-                  exit 0
-                fi
-              done
-              echo "[$(date -u +%H:%M:%S)] no lower-lettered siblings running yet"
-              sleep 3
+          IFS='|' read -ra _sids <<< "$WATCH_IDS"
+          echo "Polling for siblings (${WATCH_IDS})..."
+          sleep $(( RANDOM % 2 + 5 ))
+
+          poll=0
+          deadline=$(( $(date +%s) + 15 ))
+          while [[ $(date +%s) -lt $deadline ]]; do
+            poll=$(( poll + 1 ))
+            response=$(gh api \
+              "repos/${REPO}/commits/${{ github.sha }}/check-runs?per_page=100&filter=all")
+
+            for sid in "${_sids[@]}"; do
+              found=$(echo "$response" | jq -r --arg sid "$sid" \
+                '[.check_runs[] | select(.external_id == $sid) | select(.status == "in_progress" or .conclusion == "success")] | length')
+              if [[ "$found" -gt 0 ]]; then
+                echo "Sibling ${sid} is running — cancelling this copy."
+                kill -TERM "$PPID"
+                sleep 600
+              fi
             done
-          ' >> /tmp/speedracer-monitor.log 2>&1 &
-          disown
-          echo "Background monitor started for copy ${MY_COPY} — watching: ${WATCH_IDS}"
+
+            sleep 2
+          done
+          echo "No siblings found after ${poll} polls — proceeding to work."
         fi
 
         echo "Speedracer ready — proceeding to work."
@@ -179,7 +174,6 @@ runs:
           ext_id="spec-${my_copy}-${{ github.run_id }}-${check_name}";
           echo "Speedracer post: job.status=${JOB_STATUS} copy=${my_copy} check_id=${check_id}";
           if [[ "$JOB_STATUS" == "success" ]]; then gh api "repos/${{ github.repository }}/check-runs" -f name="${check_name}" -f head_sha="${{ github.sha }}" -f external_id="${ext_id}" -f status=completed -f conclusion=success -f "output[title]=Speedracer complete" -f "output[summary]=Copy ${my_copy} won." && echo "posted completed/success" || echo "::warning::POST success failed";
-          elif [[ -f /tmp/speedracer-killed ]]; then echo "Speedracer loss — killed by monitor, winner handles check-run";
           elif [[ "$JOB_STATUS" == "failure" ]]; then echo "Real failure — resolving check-run"; [[ "$check_id" =~ ^[0-9]+$ ]] || { echo "no valid check-id, skipping"; exit 0; }; gh api "repos/${{ github.repository }}/check-runs/${check_id}" -X PATCH -f status=completed -f conclusion=failure -f 'output[title]=Speedracer cleanup' -f 'output[summary]=Job failed; check-run resolved.' && echo "check-run → failure" || echo "::warning::PATCH failure failed";
           else echo "job.status=${JOB_STATUS} — no action taken";
           fi
