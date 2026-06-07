@@ -83,6 +83,7 @@ runs:
             # Slow runner — run as fallback but do NOT post in_progress.
             # Other copies won't see a signal and will proceed normally.
             echo "Copy a: slow runner, running as silent fallback"
+            printf '' > /tmp/speedracer-check-id
           else
             # Fast runner — post in_progress so other copies can detect us.
             check_id=$(gh api repos/"${REPO}"/check-runs \

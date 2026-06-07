@@ -62,9 +62,11 @@ jobs:
         if: always()
         run: cat /tmp/direct-monitor.log || echo "(no log)"
 
-  # Test 1: 2-copy, both fast, first wins. Expected: a=success, b=cancelled.
+  # Test 1: 2-copy, both fast. a=fallback, always runs.
+  # Expected: a=success, b=cancelled or failure (monitor kills duplicate).
   test-a-wins:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a, b]
     runs-on: ubuntu-latest
@@ -82,6 +84,7 @@ jobs:
   # Test 2: 3-copy, all fast, a wins. Expected: a=success, b=cancelled, c=cancelled.
   test-three-copy:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a, b, c]
     runs-on: ubuntu-latest
@@ -97,9 +100,10 @@ jobs:
         run: cat /tmp/speedracer-monitor.log || echo "(no log)"
 
   # Test 3: a and b are slow (deterministic CPU match); c wins as last-copy fallback.
-  # Expected: a=cancelled (gate), b=cancelled (gate), c=success.
+  # Expected: a=success (fallback, runs slow), b=cancelled (gate), c=success (fast).
   test-ab-slow-c-wins:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a, b, c]
     runs-on: ubuntu-latest
@@ -119,9 +123,11 @@ jobs:
         if: always()
         run: cat /tmp/speedracer-monitor.log || echo "(no log)"
 
-  # Test 4: a is slow (deterministic), b wins. Expected: a=cancelled (gate), b=success.
+  # Test 4: a is slow (deterministic), b is fast. a=fallback, runs silently.
+  # Expected: a=success (slow fallback), b=success (fast, a didn't signal).
   test-a-slow-b-wins:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a, b]
     runs-on: ubuntu-latest
@@ -144,6 +150,7 @@ jobs:
   # Test 5: enabled=false — both copies run, no gating. Expected: a=success, b=success.
   test-disabled:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a, b]
     runs-on: ubuntu-latest
@@ -159,6 +166,7 @@ jobs:
   # Expected: a=success, b=cancelled (monitor finds a=completed/success).
   test-fast-winner:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a, b]
     runs-on: ubuntu-latest
@@ -176,6 +184,7 @@ jobs:
   # Test 7: 4-copy. Expected: a=success, b/c/d=cancelled.
   test-four-copy:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a, b, c, d]
     runs-on: ubuntu-latest
@@ -198,6 +207,7 @@ jobs:
   # Expected: a=success, b=cancelled. Verify job: API shows conclusion=success.
   test-verify-check-run-success:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a, b]
     runs-on: ubuntu-latest
@@ -307,6 +317,7 @@ jobs:
   # Expected: a=success, b=success. Verify: 0 check-runs with spec- external_id.
   test-no-check-run-when-disabled:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a, b]
     runs-on: ubuntu-latest
@@ -346,6 +357,7 @@ jobs:
   # Expected: a=success, no monitor log, check-run posted and eventually marked success.
   test-single-copy:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a]
     runs-on: ubuntu-latest
@@ -401,6 +413,7 @@ jobs:
   # Expected: a=success, b=cancelled. Verify: check-run name correct.
   test-multi-dim-check-name:
     strategy:
+      fail-fast: false
       matrix:
         flavor: [alpha]
         speedracer: [a, b]
@@ -451,6 +464,7 @@ jobs:
   # Expected: a=success, b=cancelled. Verify: check-run name='speedracer-explicit-override'.
   test-explicit-check-name:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a, b]
     runs-on: ubuntu-latest
@@ -554,7 +568,7 @@ jobs:
 
   # Test 15: All 4 copies slow — only last-copy survives.
   # Every copy matches the actual CPU model as slow pattern.
-  # Expected: a/b/c=cancelled (CPU gate), d=success (last-copy, skips gate).
+  # Expected: a=success (fallback, always runs), b/c/d=cancelled (CPU gate).
   test-all-slow-last-survives:
     strategy:
       fail-fast: false
@@ -606,6 +620,7 @@ jobs:
   # Verifies jq queries don't break with special chars.
   test-special-chars-matrix:
     strategy:
+      fail-fast: false
       matrix:
         flavor: ["with spaces"]
         speedracer: [a, b]
@@ -654,9 +669,10 @@ jobs:
   # Test 17: POST/CPU-gate race — copy a is forced slow, copy b is last-copy.
   # Copy a posts in_progress BEFORE cpu gate kills it (known race).
   # Copy b is last-copy so it must NOT monitor — even if a's stale in_progress exists.
-  # Expected: a=cancelled, b=success. This tests the last-copy guard specifically.
+  # Expected: a=success (slow fallback), b=success (fast, a didn't signal).
   test-cpu-gate-race:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a, b]
     runs-on: ubuntu-latest
@@ -709,6 +725,7 @@ jobs:
   # Expected: a=success (arm64 skips CPU gate regardless of CPU model).
   test-arm64-not-gated:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a]
     runs-on: ubuntu-24.04-arm
@@ -840,6 +857,7 @@ jobs:
   # Expected: all copies succeed.
   test-unknown-cpu-degrades-safely:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a, b]
     runs-on: ubuntu-latest
@@ -876,6 +894,7 @@ jobs:
 
   test-tsv-missing-fallback:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a, b]
     runs-on: ubuntu-latest
@@ -893,6 +912,7 @@ jobs:
 
   test-tsv-override:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a]
     runs-on: ubuntu-latest
@@ -909,6 +929,7 @@ jobs:
 
   test-tsv-empty-fallback:
     strategy:
+      fail-fast: false
       matrix:
         speedracer: [a, b]
     runs-on: ubuntu-latest
