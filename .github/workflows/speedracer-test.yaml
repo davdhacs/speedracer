@@ -58,7 +58,6 @@ jobs:
       - name: Work (60s — b killed at ~25s via regular step SIGTERM → failure)
         run: sleep 60
 
-      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -79,7 +78,6 @@ jobs:
       - name: Work (60s)
         run: sleep 60
 
-      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -99,7 +97,6 @@ jobs:
       - name: Work (90s)
         run: sleep 90
 
-      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -125,7 +122,6 @@ jobs:
       - name: Work
         run: sleep 10
 
-      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -151,7 +147,6 @@ jobs:
       - name: Work
         run: sleep 5
 
-      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -186,7 +181,6 @@ jobs:
       - name: Work (2s — completes before monitor's initial sleep)
         run: sleep 2
 
-      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -206,7 +200,6 @@ jobs:
       - name: Work (120s)
         run: sleep 120
 
-      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -245,7 +238,6 @@ jobs:
       - name: Work (20s)
         run: sleep 20
 
-      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -388,7 +380,6 @@ jobs:
           echo "PASS: single-copy ran as expected"
       - name: Work
         run: sleep 5
-      - run: touch /tmp/speedracer-success
 
   verify-single-copy:
     needs: test-single-copy
@@ -439,7 +430,6 @@ jobs:
       - name: Work (60s)
         run: sleep 60
 
-      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -492,7 +482,6 @@ jobs:
       - name: Work (60s)
         run: sleep 60
 
-      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -594,7 +583,6 @@ jobs:
         run: |
           echo "Copy ${{ matrix.speedracer }}: only d should reach here"
           sleep 5
-      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -646,7 +634,6 @@ jobs:
           echo "PASS: check-name includes matrix value with spaces"
       - name: Work
         run: sleep 30
-      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -699,7 +686,6 @@ jobs:
         run: |
           echo "Copy ${{ matrix.speedracer }}: working"
           sleep 5
-      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -756,7 +742,6 @@ jobs:
           echo "PASS: arm64 runner was not CPU-gated despite matching slow pattern"
           echo "RUNNER_ARCH=${RUNNER_ARCH}"
 
-      - run: touch /tmp/speedracer-success
 
   # ─── Runner survey ────────────────────────────────────────────────────────
   # Collects CPU model from every job in this workflow run.
@@ -828,7 +813,6 @@ jobs:
         run: |
           echo "Copy ${{ matrix.speedracer }}: running on $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)"
           sleep 10
-      - run: touch /tmp/speedracer-success
 
       - name: Monitor log
         if: always()
@@ -881,7 +865,6 @@ jobs:
           echo "Copy ${{ matrix.speedracer }}: running (no CPU match, all copies proceed)"
           sleep 5
 
-      - run: touch /tmp/speedracer-success
 
   # Test 21: Verify runner-pool.tsv is readable and action default matches.
   # The profiler generates runner-pool.tsv with the slowest CPU as the first
@@ -920,7 +903,6 @@ jobs:
           echo "PASS: action works without runner-pool.tsv"
       - name: Work
         run: sleep 5
-      - run: touch /tmp/speedracer-success
 
   test-tsv-override:
     strategy:
@@ -937,7 +919,6 @@ jobs:
           echo "PASS: reached work — override pattern didn't match, TSV was ignored"
       - name: Work
         run: sleep 5
-      - run: touch /tmp/speedracer-success
 
   test-tsv-empty-fallback:
     strategy:
@@ -955,4 +936,3 @@ jobs:
           echo "PASS: action handles empty TSV gracefully"
       - name: Work
         run: sleep 5
-      - run: touch /tmp/speedracer-success
