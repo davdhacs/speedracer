@@ -4,16 +4,13 @@ description: >
   [a, b, c, d]) as the LAST matrix dimension and call this as the first
   step — nothing else needed.
 
-  All copies start work immediately (no gate delay). A background monitor
-  polls for siblings that posted a completed/success check-run. When a
-  winner is found, the monitor kills this copy's runner.
+  Copy 'a' is the fallback — it always runs regardless of CPU speed.
+  On a fast runner, 'a' posts an in_progress check-run as a signal.
+  Other copies (b/c/d) check their CPU speed and monitor for 'a's signal.
+  If 'a' is fast, duplicates kill themselves within seconds.
 
-  Slow runners are detected via CPU model and killed before work starts.
-
-  Post-step resolves the check-run:
-    success → POST completed/success (this copy won)
-    failure → check if a sibling already won; if so, do nothing (speedracer
-              loss, not a real failure); otherwise PATCH to completed/failure
+  Post-step resolves the check-run on job exit — POSTs completed/success
+  on success, PATCHes to completed/failure on failure.
 
 inputs:
   check-name:
@@ -24,7 +21,9 @@ inputs:
     required: false
     default: ''
   slow-cpu-pattern:
-    description: 'Substring of CPU model name that marks a slow runner. Default is auto-set from runner-pool.sh (updated weekly by the profiler).'
+    description: >
+      Substring of CPU model name that marks a slow runner. Default is
+      auto-read from runner-pool.tsv (updated weekly by the profiler).
     required: false
     default: ''
   enabled:
@@ -71,37 +70,45 @@ runs:
           echo "Auto-derived check-name: $CHECK_NAME"
         fi
 
-        # Detect last copy (fallback that always runs regardless of CPU).
-        if [[ "$CHECK_NAME" == *"("* ]]; then
-          check_stem="${CHECK_NAME%\)}"
-        else
-          check_stem="$CHECK_NAME"
-        fi
-        all_copies=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100" | \
-          jq -r --arg s "$check_stem" '.jobs[] | select(.name | startswith($s)) | .name' | \
-          grep -oE '[a-z]\)$' | tr -d ')' | sort -u) || true
-        LAST_COPY=$(echo "$all_copies" | tail -1)
-        [[ -z "$LAST_COPY" ]] && LAST_COPY="b"
-        echo "Detected copies: $(echo "$all_copies" | tr '\n' ' ')→ last=${LAST_COPY}"
-
         cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs || true)
         [[ -z "$cpu" ]] && cpu=$(lscpu | awk -F: '/Model name/{gsub(/^ +/,"",$2); print $2}' || true)
-        echo "cpu=${cpu:-unknown} copy=${MY_COPY} last=${LAST_COPY}"
+        IS_SLOW=$([[ "$cpu" == *"${SLOW_PATTERN}"* ]] && echo true || echo false)
+        echo "cpu=${cpu:-unknown} copy=${MY_COPY} is_slow=${IS_SLOW}"
 
-        # ── 1. CPU check ────────────────────────────────────────────────────
-        if [[ "$MY_COPY" != "$LAST_COPY" && "$cpu" == *"${SLOW_PATTERN}"* ]]; then
-          echo "::warning::Slow runner (${cpu}) — delegating to next copy."
-          # Do NOT post the in_progress check-run — siblings would see it and
-          # defer to this copy, but this copy is about to die.
+        EXT_ID="spec-${MY_COPY}-${RUN_ID}-${CHECK_NAME}"
+
+        # ── Copy 'a' is the fallback — always runs, never monitors ──────────
+        if [[ "$MY_COPY" == "a" ]]; then
+          if [[ "$IS_SLOW" == "true" ]]; then
+            # Slow runner — run as fallback but do NOT post in_progress.
+            # Other copies won't see a signal and will proceed normally.
+            echo "Copy a: slow runner, running as silent fallback"
+          else
+            # Fast runner — post in_progress so other copies can detect us.
+            check_id=$(gh api repos/"${REPO}"/check-runs \
+              -f name="${CHECK_NAME}" \
+              -f head_sha="${{ github.sha }}" \
+              -f status=in_progress \
+              -f external_id="${EXT_ID}" \
+              --jq '.id')
+            printf '%s\n' "${check_id:-}" > /tmp/speedracer-check-id
+            echo "Copy a: fast runner, posted in_progress ${check_id}"
+          fi
+          printf '%s\n' "${CHECK_NAME}" > /tmp/speedracer-check-name
+          printf '%s\n' "${MY_COPY}" > /tmp/speedracer-copy
+          echo "Speedracer ready — proceeding to work."
+          exit 0
+        fi
+
+        # ── Copies b/c/d: CPU gate + monitor ────────────────────────────────
+        if [[ "$IS_SLOW" == "true" ]]; then
+          echo "::warning::Slow runner (${cpu}) — delegating to another copy."
           kill -TERM "$PPID"
-          # Keep bash alive in the composite action step until the runner kills us.
-          # Without this, bash exits and the runner leaves composite-action mode —
-          # a late-arriving SIGTERM would produce 'failure' instead of 'cancelled'.
+          # Keep bash alive in composite-action mode for 'cancelled' status
           sleep 600
         fi
 
-        # ── 2. Post in_progress check-run (only reached by fast runners) ────
-        EXT_ID="spec-${MY_COPY}-${RUN_ID}-${CHECK_NAME}"
+        # Fast runner — post in_progress and start monitor
         check_id=$(gh api repos/"${REPO}"/check-runs \
           -f name="${CHECK_NAME}" \
           -f head_sha="${{ github.sha }}" \
@@ -109,18 +116,11 @@ runs:
           -f external_id="${EXT_ID}" \
           --jq '.id')
         printf '%s\n' "${check_id:-}" > /tmp/speedracer-check-id
-        printf '%s\n' "${CHECK_NAME}"  > /tmp/speedracer-check-name
-        printf '%s\n' "${MY_COPY}"     > /tmp/speedracer-copy
+        printf '%s\n' "${CHECK_NAME}" > /tmp/speedracer-check-name
+        printf '%s\n' "${MY_COPY}" > /tmp/speedracer-copy
         echo "Posted in_progress check-run ${check_id} (${EXT_ID})"
 
-        # ── 3. Background monitor — kills this copy if a sibling wins ───────
-        # Runs during work steps (no gate delay). Polls for a sibling's
-        # completed/success check-run. When found, writes a marker file and
-        # SIGTERMs the runner. The job shows as 'failure' but the post-step
-        # detects the marker and PATCHes this copy's check-run to 'cancelled'.
-        # Build list of lower-lettered siblings to watch (deterministic tiebreak).
-        # Copy b watches a. Copy c watches a,b. Copy d watches a,b,c.
-        # Copy a never monitors — it always wins if it passes the CPU gate.
+        # Monitor: watch for copy a's in_progress (and lower-lettered siblings)
         case "$MY_COPY" in
           b) WATCH_IDS="spec-a-${RUN_ID}-${CHECK_NAME}" ;;
           c) WATCH_IDS="spec-a-${RUN_ID}-${CHECK_NAME}|spec-b-${RUN_ID}-${CHECK_NAME}" ;;
@@ -128,13 +128,7 @@ runs:
           *) WATCH_IDS="" ;;
         esac
 
-        # Last-copy fallback never monitors — it must always run.
-        [[ "$MY_COPY" == "$LAST_COPY" ]] && WATCH_IDS=""
         if [[ -n "$WATCH_IDS" ]]; then
-          # Monitor checks if a lower-lettered sibling also passed the CPU gate
-          # (posted an in_progress check-run). If so, this copy is a duplicate.
-          # Fires within seconds of the sibling posting, before real work begins,
-          # avoiding duplicate artifact uploads or image pushes.
           nohup bash -c '
             sleep $(( RANDOM % 2 + 5 ))
             REPO="'"${REPO}"'"
@@ -153,7 +147,6 @@ runs:
                 echo "[$(date -u +%H:%M:%S)] ${sid}: found=${found}"
                 if [[ "$found" -gt 0 ]]; then
                   echo "[$(date -u +%H:%M:%S)] sibling ${sid} is running — copy ${MY_COPY} is a duplicate."
-                  echo "$response" | jq --arg sid "$sid" "[.check_runs[] | select(.external_id == \$sid)]"
                   touch /tmp/speedracer-killed
                   kill -TERM '"$PPID"'
                   exit 0
@@ -165,17 +158,11 @@ runs:
           ' >> /tmp/speedracer-monitor.log 2>&1 &
           disown
           echo "Background monitor started for copy ${MY_COPY} — watching: ${WATCH_IDS}"
-        else
-          echo "Copy a — no monitor needed (always wins if fast)."
         fi
 
         echo "Speedracer ready — proceeding to work."
 
-    # Post-step resolves the check-run based on job outcome.
     # ${{ job.status }} is evaluated at post-step execution time.
-    # On failure: checks whether a sibling already posted completed/success.
-    # If yes → this was a speedracer kill, not a real failure → do nothing.
-    # If no  → real failure → PATCH to completed/failure.
     - name: Register post-hook
       uses: gacts/run-and-post-run@598d7a875d5620e0457490555b5e18e46082aa47 # v1.4.0
       if: inputs.enabled == 'true'
@@ -187,7 +174,7 @@ runs:
           JOB_STATUS="${{ job.status }}";
           check_name=$(head -1 < /tmp/speedracer-check-name | tr -d '\n');
           my_copy=$(head -1 < /tmp/speedracer-copy | tr -d '\n');
-          check_id=$(head -1 < /tmp/speedracer-check-id | tr -d '[:space:]');
+          check_id=$(head -1 < /tmp/speedracer-check-id | tr -d '[:space:]' || true);
           ext_id="spec-${my_copy}-${{ github.run_id }}-${check_name}";
           echo "Speedracer post: job.status=${JOB_STATUS} copy=${my_copy} check_id=${check_id}";
           if [[ "$JOB_STATUS" == "success" ]]; then gh api "repos/${{ github.repository }}/check-runs" -f name="${check_name}" -f head_sha="${{ github.sha }}" -f external_id="${ext_id}" -f status=completed -f conclusion=success -f "output[title]=Speedracer complete" -f "output[summary]=Copy ${my_copy} won." && echo "posted completed/success" || echo "::warning::POST success failed";
