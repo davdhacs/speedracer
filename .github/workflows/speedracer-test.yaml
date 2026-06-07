@@ -730,3 +730,38 @@ jobs:
         run: |
           echo "PASS: arm64 runner was not CPU-gated despite matching slow pattern"
           echo "RUNNER_ARCH=${RUNNER_ARCH}"
+
+  # ─── Runner survey ────────────────────────────────────────────────────────
+  # Collects CPU model from every job in this workflow run.
+  # Provides data on runner pool composition for tuning slow-cpu-pattern.
+  runner-survey:
+    needs:
+      - test-a-wins
+      - test-three-copy
+      - test-ab-slow-c-wins
+      - test-a-slow-b-wins
+      - test-disabled
+      - test-fast-winner
+      - test-four-copy
+      - test-all-slow-last-survives
+      - test-special-chars-matrix
+      - test-cpu-gate-race
+      - test-arm64-not-gated
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Collect CPU models from all jobs in this run
+        run: |
+          echo "=== Runner Pool Survey for run ${{ github.run_id }} ==="
+          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion != null) | {name: .name, runner: .runnerName, labels: .labels}' | \
+            jq -s 'group_by(.labels) | .[] | {labels: .[0].labels, count: length, jobs: [.[].name]}' 2>/dev/null || true
+          echo ""
+          echo "=== CPU models from job logs ==="
+          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion != null) | .databaseId' | while read JOB_ID; do
+            cpu=$(gh api "repos/${{ github.repository }}/actions/jobs/${JOB_ID}/logs" 2>&1 | grep "cpu=" | grep -v "36;1m" | head -1 | sed 's/.*cpu=//' | sed 's/ copy=.*//')
+            [[ -n "$cpu" ]] && echo "$cpu"
+          done | sort | uniq -c | sort -rn
