@@ -749,7 +749,10 @@ jobs:
       - test-arm64-not-gated
       - test-fastest-only
       - test-unknown-cpu-degrades-safely
-      - test-tsv-default-matches
+      - test-tsv-reading
+      - test-tsv-missing-fallback
+      - test-tsv-override
+      - test-tsv-empty-fallback
     if: always()
     runs-on: ubuntu-latest
     env:
