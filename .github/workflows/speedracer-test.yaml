@@ -856,34 +856,70 @@ jobs:
   # Test 21: Verify runner-pool.tsv is readable and action default matches.
   # The profiler generates runner-pool.tsv with the slowest CPU as the first
   # data row. The action's slow-cpu-pattern default should match that value.
-  test-tsv-default-matches:
+  # ─── TSV tests ────────────────────────────────────────────────────────────
+
+  test-tsv-reading:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
-
       - name: Assert runner-pool.tsv exists and is valid
         run: |
-          if [[ ! -f runner-pool.tsv ]]; then
-            echo "SKIP: runner-pool.tsv not yet generated (profiler hasn't run)"
-            exit 0
-          fi
-          lines=$(grep -v '^#' runner-pool.tsv | wc -l)
+          [[ -f runner-pool.tsv ]] || { echo "FAIL: runner-pool.tsv missing"; exit 1; }
+          lines=$(grep -cv '^#' runner-pool.tsv)
           echo "runner-pool.tsv has ${lines} CPU entries"
-          [[ "$lines" -gt 0 ]] || { echo "FAIL: no CPU entries in runner-pool.tsv"; exit 1; }
-          echo "Contents:"
+          [[ "$lines" -gt 0 ]] || { echo "FAIL: no CPU entries"; exit 1; }
+          first=$(grep -v '^#' runner-pool.tsv | head -1 | cut -f1)
+          echo "Slowest CPU ID: '${first}'"
+          [[ -n "$first" ]] || { echo "FAIL: empty first column"; exit 1; }
           cat runner-pool.tsv
-          echo "PASS: runner-pool.tsv is valid"
+          echo "PASS"
 
-      - name: Assert action reads runner-pool.tsv at runtime
-        env:
-          GH_TOKEN: ${{ github.token }}
+  test-tsv-missing-fallback:
+    strategy:
+      matrix:
+        speedracer: [a, b]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - name: Delete runner-pool.tsv
+        run: rm -f runner-pool.tsv
+      - uses: ./
+      - name: Assert gate completed with hardcoded fallback
         run: |
-          if [[ ! -f runner-pool.tsv ]]; then
-            echo "SKIP: runner-pool.tsv not yet generated (profiler hasn't run)"
-            exit 0
-          fi
-          slowest=$(grep -v '^#' runner-pool.tsv | head -1 | cut -f1)
-          echo "Slowest CPU in tsv: '${slowest}'"
-          echo "Action will use this as slow-cpu-pattern when caller doesn't override"
-          [[ -n "$slowest" ]] || { echo "FAIL: empty slowest CPU in tsv"; exit 1; }
-          echo "PASS: runner-pool.tsv is readable and has a valid slowest CPU"
+          [[ -f /tmp/speedracer-check-name ]] || { echo "FAIL: gate didn't complete"; exit 1; }
+          echo "PASS: action works without runner-pool.tsv"
+      - name: Work
+        run: sleep 5
+
+  test-tsv-override:
+    strategy:
+      matrix:
+        speedracer: [a]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - uses: ./
+        with:
+          slow-cpu-pattern: CUSTOM_OVERRIDE_PATTERN
+      - name: Assert override took priority
+        run: |
+          echo "PASS: reached work — override pattern didn't match, TSV was ignored"
+      - name: Work
+        run: sleep 5
+
+  test-tsv-empty-fallback:
+    strategy:
+      matrix:
+        speedracer: [a, b]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - name: Replace TSV with empty file
+        run: echo "# empty profile" > runner-pool.tsv
+      - uses: ./
+      - name: Assert gate completed with hardcoded fallback
+        run: |
+          [[ -f /tmp/speedracer-check-name ]] || { echo "FAIL: gate didn't complete"; exit 1; }
+          echo "PASS: action handles empty TSV gracefully"
+      - name: Work
+        run: sleep 5
