@@ -122,7 +122,7 @@ runs:
           echo "Polling for higher-priority siblings..."
           sleep $(( RANDOM % 2 + 5 ))
 
-          deadline=$(( $(date +%s) + 15 ))
+          deadline=$(( $(date +%s) + 5 ))
           while [[ $(date +%s) -lt $deadline ]]; do
             response=$(gh api \
               "repos/${REPO}/commits/${{ github.sha }}/check-runs?per_page=100&filter=all")
