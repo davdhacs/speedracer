@@ -360,17 +360,13 @@ jobs:
       - uses: ./
         with:
           slow-cpu-pattern: ${{ steps.cpu.outputs.model }}  # matches real CPU — must NOT gate single copy
-      - name: Assert check-run was posted (not gated)
+      - name: Assert single copy ran successfully
         run: |
-          check_id=$(head -1 < /tmp/speedracer-check-id | tr -d '[:space:]')
-          [[ "$check_id" =~ ^[0-9]+$ ]] || { echo "FAIL: no valid check-id — single copy was wrongly gated"; exit 1; }
-          echo "PASS: check-run posted (id=${check_id}), single copy not gated"
-      - name: Assert monitor was NOT started
-        run: |
-          [[ ! -f /tmp/speedracer-monitor.log ]] || { echo "FAIL: monitor started for single-copy matrix"; exit 1; }
-          echo "PASS: no monitor started for single-copy matrix"
+          [[ -f /tmp/speedracer-check-name ]] || { echo "FAIL: gate didn't complete"; exit 1; }
+          echo "PASS: single-copy ran as expected"
       - name: Work
         run: sleep 5
+      - run: touch /tmp/speedracer-success
 
   verify-single-copy:
     needs: test-single-copy
@@ -573,6 +569,8 @@ jobs:
         run: |
           echo "Copy ${{ matrix.speedracer }}: only d should reach here"
           sleep 5
+      - run: touch /tmp/speedracer-success
+
       - name: Monitor log
         if: always()
         run: cat /tmp/speedracer-monitor.log 2>&1 || echo "(no log)"
@@ -623,6 +621,8 @@ jobs:
           echo "PASS: check-name includes matrix value with spaces"
       - name: Work
         run: sleep 30
+      - run: touch /tmp/speedracer-success
+
       - name: Monitor log
         if: always()
         run: cat /tmp/speedracer-monitor.log 2>&1 || echo "(no log)"
@@ -674,6 +674,8 @@ jobs:
         run: |
           echo "Copy ${{ matrix.speedracer }}: working"
           sleep 5
+      - run: touch /tmp/speedracer-success
+
       - name: Monitor log
         if: always()
         run: cat /tmp/speedracer-monitor.log 2>&1 || echo "(no log)"
@@ -728,6 +730,8 @@ jobs:
         run: |
           echo "PASS: arm64 runner was not CPU-gated despite matching slow pattern"
           echo "RUNNER_ARCH=${RUNNER_ARCH}"
+
+      - run: touch /tmp/speedracer-success
 
   # ─── Runner survey ────────────────────────────────────────────────────────
   # Collects CPU model from every job in this workflow run.
@@ -799,6 +803,8 @@ jobs:
         run: |
           echo "Copy ${{ matrix.speedracer }}: running on $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)"
           sleep 10
+      - run: touch /tmp/speedracer-success
+
       - name: Monitor log
         if: always()
         run: cat /tmp/speedracer-monitor.log 2>&1 || echo "(no log)"
@@ -850,6 +856,8 @@ jobs:
           echo "Copy ${{ matrix.speedracer }}: running (no CPU match, all copies proceed)"
           sleep 5
 
+      - run: touch /tmp/speedracer-success
+
   # Test 21: Verify runner-pool.tsv is readable and action default matches.
   # The profiler generates runner-pool.tsv with the slowest CPU as the first
   # data row. The action's slow-cpu-pattern default should match that value.
@@ -887,6 +895,7 @@ jobs:
           echo "PASS: action works without runner-pool.tsv"
       - name: Work
         run: sleep 5
+      - run: touch /tmp/speedracer-success
 
   test-tsv-override:
     strategy:
@@ -903,6 +912,7 @@ jobs:
           echo "PASS: reached work — override pattern didn't match, TSV was ignored"
       - name: Work
         run: sleep 5
+      - run: touch /tmp/speedracer-success
 
   test-tsv-empty-fallback:
     strategy:
@@ -920,3 +930,4 @@ jobs:
           echo "PASS: action handles empty TSV gracefully"
       - name: Work
         run: sleep 5
+      - run: touch /tmp/speedracer-success

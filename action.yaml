@@ -13,6 +13,12 @@ description: >
   If a fast sibling exists, 'a' defers to it. If all siblings are slow,
   'a' proceeds on slow hardware (the only option).
 
+
+  Callers add 'run: touch /tmp/speedracer-success' as their last step.
+  The post-step reads this marker to resolve the check-run:
+    marker present → POST completed/success
+    marker absent  → PATCH to completed/failure (real job failure)
+    no check-id    → nothing (copy was cancelled or disabled)
   All cancellations happen within the composite action step, producing
   'cancelled' status (not 'failure').
 
@@ -144,7 +150,8 @@ runs:
 
         echo "Speedracer ready — proceeding to work."
 
-    # ${{ job.status }} is evaluated at post-step execution time.
+    # Post-step routes on /tmp/speedracer-success marker file.
+    # Callers write it as their last step: run: touch /tmp/speedracer-success
     - name: Register post-hook
       uses: gacts/run-and-post-run@598d7a875d5620e0457490555b5e18e46082aa47 # v1.4.0
       if: inputs.enabled == 'true'
