@@ -96,7 +96,6 @@ jobs:
           # First column is the short CPU ID (for use as slow-cpu-pattern value).
           # Columns: cpu_id, count, pct, avg_bench_ms, avg_disk_mbs, cores, mem_mb, full_model
           {
-            echo "# Runner pool profile — updated ${DATE}"
             echo "# cpu_id	count	pct	avg_bench_ms	avg_disk_mbs	cores	mem_mb	full_model"
             jq -r '
               group_by(.cpu) |
