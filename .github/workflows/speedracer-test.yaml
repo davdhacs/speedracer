@@ -282,12 +282,13 @@ jobs:
       - uses: ./
         with:
           slow-cpu-pattern: NEVER_MATCH_THIS
-      - name: Work (a fails; b waits for monitor all_gone signal)
+      - name: Work (b fails deliberately to test failure post-step)
         run: |
-          if [[ "${{ matrix.speedracer }}" == "a" ]]; then
-            sleep 3 && echo "Copy a: deliberate failure" && exit 1
+          if [[ "${{ matrix.speedracer }}" == "b" ]]; then
+            echo "Copy b: deliberate failure" && exit 1
           else
-            sleep 90 && echo "Copy b: done (monitor saw a=failed → all_gone)"
+            echo "Copy a: fallback (should be cancelled before reaching here)"
+            sleep 60
           fi
       - name: Monitor log
         if: always()
