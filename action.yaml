@@ -66,6 +66,12 @@ runs:
         RUN_ID="${{ github.run_id }}"
         REPO="${{ github.repository }}"
 
+        # Validate: speedracer values must be single lowercase letters a-d
+        if [[ ! "$MY_COPY" =~ ^[a-z]$ ]]; then
+          echo "::error::Invalid speedracer value '${MY_COPY}'. Use single lowercase letters: a, b, c, ..."
+          exit 1
+        fi
+
         CHECK_NAME="${{ inputs.check-name }}"
         if [[ -z "$CHECK_NAME" ]]; then
           MATRIX_JSON='${{ toJSON(matrix) }}'
