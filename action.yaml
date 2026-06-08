@@ -121,12 +121,13 @@ runs:
         # Higher letters have priority: d > c > b > a.
         # Each copy watches for siblings with HIGHER letters that posted.
         # If found → this copy is lower priority → cancel.
-        case "$MY_COPY" in
-          a) WATCH_IDS="spec-b-${RUN_ID}-${CHECK_NAME}|spec-c-${RUN_ID}-${CHECK_NAME}|spec-d-${RUN_ID}-${CHECK_NAME}" ;;
-          b) WATCH_IDS="spec-c-${RUN_ID}-${CHECK_NAME}|spec-d-${RUN_ID}-${CHECK_NAME}" ;;
-          c) WATCH_IDS="spec-d-${RUN_ID}-${CHECK_NAME}" ;;
-          *) WATCH_IDS="" ;;
-        esac
+        # Build WATCH_IDS: all letters that sort after ours have higher priority.
+        # Copy 'a' watches b-z, copy 'b' watches c-z, etc. The highest fast
+        # copy wins. Works with any number of copies — no hardcoded limit.
+        WATCH_IDS=""
+        for L in {a..z}; do
+          [[ "$L" > "$MY_COPY" ]] && WATCH_IDS="${WATCH_IDS:+${WATCH_IDS}|}spec-${L}-${RUN_ID}-${CHECK_NAME}"
+        done
 
         if [[ -n "$WATCH_IDS" ]]; then
           IFS='|' read -ra _sids <<< "$WATCH_IDS"
