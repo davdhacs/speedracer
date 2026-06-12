@@ -7,6 +7,11 @@ on:
   schedule:
     - cron: '37 9 * * 1'  # weekly Monday 9:37 UTC
   workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Show what would change without committing'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -186,6 +191,17 @@ jobs:
           cat runner-pool.tsv
 
           # --- Commit only if structure changed ---
+          if [[ "${{ inputs.dry-run }}" == "true" ]]; then
+            echo "=== DRY RUN ==="
+            if [[ "$PRUNED" -gt 0 || "$ADDED" -gt 0 ]]; then
+              echo "WOULD COMMIT: pruned=${PRUNED} added=${ADDED}"
+            else
+              echo "WOULD SKIP: no structural changes"
+            fi
+            diff runner-pool.tsv /dev/stdin <<< "$(git show HEAD:runner-pool.tsv 2>/dev/null)" || true
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add runner-pool.tsv
