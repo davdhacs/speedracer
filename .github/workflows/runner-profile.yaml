@@ -77,9 +77,10 @@ jobs:
           path: /tmp/profiles
           merge-multiple: true
 
-      - name: Merge profiles and commit
+      - name: Merge profiles and update runner-pool.tsv
         run: |
           DATE=$(date -u +%Y-%m-%d)
+          SAMPLE_COUNT=$(ls /tmp/profiles/runner-*.json 2>/dev/null | wc -l | tr -d ' ')
 
           # Merge all profile JSONs
           echo "[" > /tmp/merged.json
@@ -92,33 +93,112 @@ jobs:
           done
           echo "]" >> /tmp/merged.json
 
-          # Generate runner-pool.tsv: tab-separated, slowest first (by benchmark)
-          # First column is the short CPU ID (for use as slow-cpu-pattern value).
-          # Columns: cpu_id, count, pct, avg_bench_ms, avg_disk_mbs, cores, mem_mb, full_model
+          # Build fresh data from this run: one JSON object per CPU type, sorted slowest-first
+          jq -r --argjson n "$SAMPLE_COUNT" '
+            group_by(.cpu) |
+            map({
+              full: .[0].cpu,
+              id: (.[0].cpu | gsub("AMD EPYC "; "") | gsub("Intel\\(R\\) Xeon\\(R\\) "; "") | gsub(" \\d+-Core Processor"; "") | gsub(" CPU @ .*"; "")),
+              count: length,
+              pct: "\(length * 100 / $n)%",
+              avg_ms: ([.[].cpu_bench_ms] | add / length | round),
+              avg_disk: ([.[].disk_write_mbs | tonumber? // 0] | add / length | round),
+              cores: .[0].cores,
+              mem_mb: .[0].mem_mb
+            }) |
+            sort_by(-.avg_ms)
+          ' /tmp/merged.json > /tmp/fresh.json
+
+          echo "=== Fresh profile (this run) ==="
+          jq -r '.[] | "\(.id)\t\(.count)\t\(.pct)\t\(.avg_ms)\t\(.avg_disk)\t\(.cores)\t\(.mem_mb)\t\(.full)"' /tmp/fresh.json
+
+          # Parse old TSV into JSON (skip comment lines)
+          if [[ -f runner-pool.tsv ]]; then
+            grep -v '^#' runner-pool.tsv | jq -Rn '
+              [inputs | split("\t") | select(length >= 8) | {
+                id: .[0], count: (.[1] | tonumber), pct: .[2],
+                avg_ms: (.[3] | tonumber), avg_disk: (.[4] | tonumber),
+                cores: (.[5] | tonumber), mem_mb: (.[6] | tonumber), full: .[7]
+              }]
+            ' > /tmp/old.json
+          else
+            echo '[]' > /tmp/old.json
+          fi
+
+          # Single jq: prune unseen top entries, merge fresh data, track changes
+          jq -n --slurpfile old /tmp/old.json --slurpfile fresh /tmp/fresh.json '
+            ($fresh[0] | map(.id)) as $seen |
+
+            # Prune: drop leading old entries not in $seen
+            ($old[0] | length) as $total |
+            (reduce range($total) as $i (
+              {pruning: true, pruned: 0, kept: []};
+              ($old[0][$i]) as $entry |
+              if .pruning and ($seen | index($entry.id) | not) then
+                .pruned += 1
+              else
+                .pruning = false | .kept += [$entry]
+              end
+            )) as $prune |
+
+            # Old IDs after pruning
+            ($prune.kept | map(.id)) as $old_ids |
+
+            # New entries: in fresh but not in old (after pruning)
+            [$fresh[0][] | select(.id as $id | $old_ids | index($id) | not)] as $new_entries |
+
+            # Merge: update existing with fresh benchmarks, keep unseen as-is
+            [
+              ($prune.kept[] | . as $old |
+                ([$fresh[0][] | select(.id == $old.id)][0] // null) as $match |
+                if $match then $match else $old end
+              ),
+              $new_entries[]
+            ] |
+            sort_by(-.avg_ms) |
+
+            # Format for output
+            { pruned: $prune.pruned,
+              added: ($new_entries | length),
+              entries: [.[] | {
+                id, full,
+                count: (.count | tostring),
+                pct: (if .pct then .pct else "\(.count)/?%" end),
+                avg_ms: (.avg_ms | tostring),
+                avg_disk: (.avg_disk | tostring),
+                cores: (.cores | tostring),
+                mem_mb: (.mem_mb | tostring)
+              }]
+            }
+          ' > /tmp/result.json
+
+          PRUNED=$(jq -r '.pruned' /tmp/result.json)
+          ADDED=$(jq -r '.added' /tmp/result.json)
+          echo "Pruned ${PRUNED} unseen top entries, added ${ADDED} new CPU types"
+
+          # Write final TSV
           {
             echo "# cpu_id	count	pct	avg_bench_ms	avg_disk_mbs	cores	mem_mb	full_model"
-            jq -r '
-              group_by(.cpu) |
-              map({
-                full: .[0].cpu,
-                id: (.[0].cpu | gsub("AMD EPYC "; "") | gsub("Intel\\(R\\) Xeon\\(R\\) "; "") | gsub(" \\d+-Core Processor"; "") | gsub(" CPU @ .*"; "")),
-                count: length,
-                avg_ms: ([.[].cpu_bench_ms] | add / length | round),
-                avg_disk: ([.[].disk_write_mbs | tonumber? // 0] | add / length | round),
-                cores: .[0].cores,
-                mem_mb: .[0].mem_mb
-              }) |
-              sort_by(-.avg_ms) |
-              .[] |
-              "\(.id)\t\(.count)\t\(.count * 100 / 10)%\t\(.avg_ms)\t\(.avg_disk)\t\(.cores)\t\(.mem_mb)\t\(.full)"
-            ' /tmp/merged.json
+            jq -r '.entries[] | "\(.id)\t\(.count)\t\(.pct)\t\(.avg_ms)\t\(.avg_disk)\t\(.cores)\t\(.mem_mb)\t\(.full)"' /tmp/result.json
           } > runner-pool.tsv
 
           echo "=== runner-pool.tsv ==="
           cat runner-pool.tsv
 
+          # --- Commit only if structure changed ---
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add runner-pool.tsv
-          git diff --cached --quiet || git commit -m "data: runner pool profile ${DATE}"
-          git push || echo "::warning::Failed to push profile data"
+
+          if [[ "$PRUNED" -gt 0 || "$ADDED" -gt 0 ]]; then
+            REASON=""
+            [[ "$PRUNED" -gt 0 ]] && REASON="pruned ${PRUNED} unseen top entries"
+            [[ "$ADDED" -gt 0 ]] && REASON="${REASON:+$REASON, }added ${ADDED} new CPU types"
+            git diff --cached --quiet || {
+              git commit -m "data: runner pool profile ${DATE} (${REASON})"
+              git push || echo "::warning::Failed to push profile data"
+            }
+          else
+            echo "No structural changes (same CPU types, same ordering) — skipping commit"
+            git checkout -- runner-pool.tsv 2>/dev/null || true
+          fi
