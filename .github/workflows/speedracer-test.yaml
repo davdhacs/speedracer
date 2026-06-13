@@ -62,11 +62,9 @@ jobs:
         if: always()
         run: cat /tmp/direct-monitor.log || echo "(no log)"
 
-  # Test 1: 2-copy, same rank (same hardware). Letter tiebreak: b > a, but a
-  # is fallback and never self-cancels. b defers to nobody → both proceed.
-  # With ranking, same-rank copies where a is the only lower → a wins by
-  # being the fallback. b has no higher-lettered sibling → b also proceeds.
-  # Expected: both succeed (same rank, a is fallback).
+  # Test 1: 2-copy, same rank (same hardware). Letter tiebreak: b > a.
+  # a defers to b (higher letter). b has no higher sibling → b wins.
+  # Expected: a=cancelled, b=success.
   test-same-rank-2copy:
     strategy:
       matrix:
@@ -78,9 +76,9 @@ jobs:
       - name: Work (60s)
         run: sleep 60
 
-  # Test 2: 3-copy, same rank. c > b (letter tiebreak), b defers to c.
-  # a is fallback. c wins among non-fallback copies.
-  # Expected: a=success, b=cancelled, c=success.
+  # Test 2: 3-copy, same rank. c > b > a (letter tiebreak).
+  # a and b defer to c. c wins.
+  # Expected: a=cancelled, b=cancelled, c=success.
   test-same-rank-3copy:
     strategy:
       matrix:
@@ -107,8 +105,8 @@ jobs:
       - name: Work
         run: sleep 5
 
-  # Test 4: 4-copy, same rank. d wins by letter tiebreak.
-  # Expected: a=success (fallback), b/c=cancelled, d=success.
+  # Test 4: 4-copy, same rank. d > c > b > a. d wins.
+  # Expected: a/b/c=cancelled, d=success.
   test-same-rank-4copy:
     strategy:
       matrix:
@@ -183,7 +181,8 @@ jobs:
           echo "FAIL: no check-run reached conclusion=success"; exit 1
 
   # Test 6: Failure path — copy b fails, post-step patches check-run to failure.
-  # Expected: a=success (fallback proceeds), b=failure. Verify: failure check-run exists.
+  # b is higher letter so a defers. b fails. a was already cancelled.
+  # Expected: b=failure. Verify: failure check-run exists.
   test-failure-path:
     strategy:
       fail-fast: false
@@ -200,7 +199,7 @@ jobs:
           if [[ "${{ matrix.speedracer }}" == "b" ]]; then
             echo "Copy b: deliberate failure" && exit 1
           else
-            echo "Copy a: fallback"
+            echo "Copy a: defers to b"
             sleep 60
           fi
       - name: Monitor log
@@ -401,9 +400,9 @@ jobs:
           done
           echo "FAIL: no check-run with override name reached success"; exit 1
 
-  # Test 11: Sibling fails — other copy should proceed (failure ≠ win signal).
+  # Test 11: Sibling fails — failure is not a win signal.
   # copy b: posts check-run then deliberately fails.
-  # copy a: fallback, proceeds regardless.
+  # copy a: defers to b initially, but b's failure isn't in_progress/success.
   # Expected: b=failure, a=success. Verify: failure check-run exists.
   test-sibling-fails-not-winner:
     strategy:

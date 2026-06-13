@@ -8,8 +8,7 @@ description: >
   rank; higher line = faster). Copies post an in_progress check-run
   with their rank embedded, then poll siblings. If a higher-ranked
   sibling exists, this copy cancels itself. Same-rank ties break by
-  letter (higher letter wins). Copy 'a' is the fallback — it never
-  self-cancels.
+  letter (higher letter wins).
 
   Unknown CPUs (not in the TSV) get rank 0 — they defer to everyone.
 
@@ -103,9 +102,7 @@ runs:
         printf '%s\n' "${MY_RANK}" > /tmp/speedracer-rank
 
         # ── 3. Poll for higher-ranked siblings ──────────────────────────────
-        # Copy 'a' is the fallback: it defers to strictly higher rank only
-        # (never to same-rank siblings). Other copies also defer on same-rank
-        # tiebreak: higher letter wins.
+        # Higher rank wins. Same rank → higher letter wins.
         echo "Polling for higher-ranked siblings..."
         sleep $(( RANDOM % 2 + 5 ))
 
@@ -128,15 +125,9 @@ runs:
             sib_letter=$(echo "$sid" | cut -d- -f2)
             sib_rank=$(echo "$sid" | cut -d- -f3 | tr -d 'r')
 
-            if [[ "$sib_rank" -gt "$MY_RANK" ]]; then
-              echo "Higher-ranked sibling ${sid} (rank=${sib_rank} > ${MY_RANK}) — cancelling."
-              kill -TERM "$PPID"
-              sleep 600
-            fi
-
-            # Same rank: higher letter wins (copy 'a' never defers on tiebreak)
-            if [[ "$sib_rank" -eq "$MY_RANK" && "$MY_COPY" != "a" && "$sib_letter" > "$MY_COPY" ]]; then
-              echo "Same-rank sibling ${sid} has higher letter — cancelling."
+            if [[ "$sib_rank" -gt "$MY_RANK" ]] || \
+               [[ "$sib_rank" -eq "$MY_RANK" && "$sib_letter" > "$MY_COPY" ]]; then
+              echo "Higher-priority sibling ${sid} (rank=${sib_rank}, letter=${sib_letter}) — cancelling."
               kill -TERM "$PPID"
               sleep 600
             fi

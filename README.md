@@ -8,7 +8,7 @@ The entire action is a single file: `action.yaml` (composite action with inline 
 
 1. **Rank lookup** — Each copy reads `runner-pool.tsv` to find its CPU type's line number (rank). Line 1 = slowest = rank 1. Higher line = faster = higher rank. Unknown CPUs get rank 0 (worst).
 2. **Check-run posting** — Every copy POSTs an `in_progress` check-run to the GitHub Checks API with rank embedded in the `external_id`: `spec-{letter}-r{rank}-{run_id}-{check_name}`.
-3. **Sibling polling** — Each copy polls for siblings. Higher-ranked siblings always win. Same-rank ties break by letter (higher letter wins). Copy `a` is the fallback — it defers to higher rank but never to same-rank siblings.
+3. **Sibling polling** — Each copy polls for siblings. Higher-ranked siblings always win. Same-rank ties break by letter (higher letter wins).
 4. **Post-step** — Uses `gacts/run-and-post-run` to resolve the check-run after the job finishes. `job.status == success` → POST new completed/success check-run. `job.status == failure` → PATCH existing check-run to completed/failure.
 
 The check-run contract is what makes this work with branch protection — the winning copy's check-run satisfies required status checks.
@@ -47,7 +47,7 @@ The action communicates between the gate step and the post-step via files in `/t
 
 - Commit style: conventional commits (`fix:`, `refactor:`, `data:`, etc.)
 - Rank is determined by line position in `runner-pool.tsv` (1-indexed, data rows only). Higher rank = faster CPU. Rank 0 = unknown CPU, defers to everyone.
-- Copy `a` is special: it's the fallback that never self-cancels on same-rank tiebreaks. It only defers to strictly higher-ranked siblings.
+- No copy is special — all follow the same rank+letter priority. The highest-ranked copy with the highest letter wins.
 - `kill -TERM $PPID` inside a composite action step produces `cancelled` status (not `failure`) — this is why the action uses composite steps rather than regular run steps
 - The sibling polling loop has a short deadline (5s after an initial random 5-6s sleep) — it's a quick check, not a long poll
 - `runner-pool.tsv` is committed by a bot only when the pool structure changes — don't manually edit it unless the profiler is broken
