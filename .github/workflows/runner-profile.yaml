@@ -99,24 +99,18 @@ jobs:
           echo "]" >> /tmp/merged.json
 
           # Build fresh data from this run: one JSON object per CPU type, sorted slowest-first.
-          # Filter out CPU types with <20% share — too rare to be worth gating.
-          # Unless ALL types are <20%, keep them all so the file isn't empty.
           jq -r --argjson n "$SAMPLE_COUNT" '
             group_by(.cpu) |
             map({
               full: .[0].cpu,
               id: (.[0].cpu | gsub("AMD EPYC "; "") | gsub("Intel\\(R\\) Xeon\\(R\\) "; "") | gsub(" \\d+-Core Processor"; "") | gsub(" CPU @ .*"; "")),
               count: length,
-              pct_num: (length * 100 / $n),
               pct: "\(length * 100 / $n)%",
               avg_ms: ([.[].cpu_bench_ms] | add / length | round),
               avg_disk: ([.[].disk_write_mbs | tonumber? // 0] | add / length | round),
               cores: .[0].cores,
               mem_mb: .[0].mem_mb
             }) |
-            (map(select(.pct_num >= 20))) as $common |
-            (if ($common | length) > 1 then $common else . end) |
-            map(del(.pct_num)) |
             sort_by(-.avg_ms)
           ' /tmp/merged.json > /tmp/fresh.json
 

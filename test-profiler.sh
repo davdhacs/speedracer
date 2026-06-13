@@ -30,23 +30,19 @@ CPU_VERY_FAST='{"cpu":"AMD EPYC 9X94 128-Core Processor","cpu_bench_ms":4000,"di
 
 # ── jq expressions (must match runner-profile.yaml) ─────────────────────────
 
-# Step 1: group raw profiles into per-type aggregates, filter <20%, sort slowest-first
+# Step 1: group raw profiles into per-type aggregates, sort slowest-first
 JQ_BUILD_FRESH='
   group_by(.cpu) |
   map({
     full: .[0].cpu,
     id: (.[0].cpu | gsub("AMD EPYC "; "") | gsub("Intel\\(R\\) Xeon\\(R\\) "; "") | gsub(" \\d+-Core Processor"; "") | gsub(" CPU @ .*"; "")),
     count: length,
-    pct_num: (length * 100 / $n),
     pct: "\(length * 100 / $n)%",
     avg_ms: ([.[].cpu_bench_ms] | add / length | round),
     avg_disk: ([.[].disk_write_mbs | tonumber? // 0] | add / length | round),
     cores: .[0].cores,
     mem_mb: .[0].mem_mb
   }) |
-  (map(select(.pct_num >= 20))) as $common |
-  (if ($common | length) > 1 then $common else . end) |
-  map(del(.pct_num)) |
   sort_by(-.avg_ms)
 '
 
@@ -219,20 +215,20 @@ run_test "A4: three-type-all-common" \
   "Row1=7763 gates 40%. Medium and fast proceed."
 
 run_test "A5: three-type-rare-slowest" \
-  "1 very-slow + 5 slow + 4 medium (10/50/40). Rare outlier slowest." \
+  "1 very-slow + 5 slow + 4 medium (10/50/40). Rare slowest included." \
   "$(make_profiles 1 "$CPU_VERY_SLOW" 5 "$CPU_SLOW" 4 "$CPU_MEDIUM")" \
   "" \
-  "7763,9V74" \
+  "7551,7763,9V74" \
   "yes" \
-  "Optimal: filter out 10% very-slow. Gate 7763 (50%) instead."
+  "All types included regardless of share. 7551 gets rank 1."
 
 run_test "A6: three-type-rare-fastest" \
-  "5 slow + 4 medium + 1 fast (50/40/10). Rare fast type." \
+  "5 slow + 4 medium + 1 fast (50/40/10). Rare fast type included." \
   "$(make_profiles 5 "$CPU_SLOW" 4 "$CPU_MEDIUM" 1 "$CPU_FAST")" \
   "" \
-  "7763,9V74" \
+  "7763,9V74,9V84" \
   "yes" \
-  "Optimal: filter out 10% fast. Gate 7763 (50%)."
+  "All types included. 9V84 gets highest rank despite 10% share."
 
 run_test "A7: single-type" \
   "10 slow (100%). Homogeneous pool." \
@@ -250,21 +246,21 @@ run_test "A8: five-types-all-20pct" \
   "yes" \
   "All at exactly 20% — all kept. Row1=7551 gates 20%."
 
-run_test "A9: five-types-sub-20" \
-  "Mixed distribution, one type at 10%." \
+run_test "A9: five-types-mixed-share" \
+  "Mixed distribution, all types included." \
   "$(make_profiles 1 "$CPU_VERY_SLOW" 2 "$CPU_SLOW" 2 "$CPU_MEDIUM" 2 "$CPU_FAST" 3 "$CPU_VERY_FAST")" \
+  "" \
+  "7551,7763,9V74,9V84,9X94" \
+  "yes" \
+  "All 5 types included. Full ranking from slowest to fastest."
+
+run_test "A10: four-type-spread" \
+  "4+3+2+1 distribution (40/30/20/10). All included." \
+  "$(make_profiles 4 "$CPU_SLOW" 3 "$CPU_MEDIUM" 2 "$CPU_FAST" 1 "$CPU_VERY_FAST")" \
   "" \
   "7763,9V74,9V84,9X94" \
   "yes" \
-  "7551 at 10% filtered. Row1=7763 gates 20%."
-
-run_test "A10: four-type-spread" \
-  "4+3+2+1 distribution (40/30/20/10)." \
-  "$(make_profiles 4 "$CPU_SLOW" 3 "$CPU_MEDIUM" 2 "$CPU_FAST" 1 "$CPU_VERY_FAST")" \
-  "" \
-  "7763,9V74,9V84" \
-  "yes" \
-  "9X94 (10%) filtered. Row1=7763 gates 40%."
+  "All 4 types ranked. 9X94 at 10% still gets highest rank."
 
 run_test "A11: extreme-skew-95-5" \
   "19 fast + 1 slow out of 20. Extreme skew." \
@@ -323,13 +319,13 @@ run_test "C1: new-common-type-appears" \
   "yes" \
   "New type 9V84 at 30% → added. Commit."
 
-run_test "C2: new-rare-type-filtered" \
-  "Old has slow+medium. Fresh sees a rare new fast type (10%)." \
+run_test "C2: new-rare-type-added" \
+  "Old has slow+medium. Fresh sees a rare new fast type (10%). Added." \
   "$(make_profiles 5 "$CPU_SLOW" 4 "$CPU_MEDIUM" 1 "$CPU_FAST")" \
   "$OLD_TSV_STANDARD_WITH_HEADER" \
-  "7763,9V74" \
-  "no" \
-  "New fast type at 10% filtered by 20% rule. Not added. No commit."
+  "7763,9V74,9V84" \
+  "yes" \
+  "New fast type added regardless of share. Count changed → commit."
 
 run_test "C3: type-unseen-stays" \
   "Old has slow+medium. Fresh only sees medium. Unseen type stays." \
@@ -369,48 +365,32 @@ $(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' '9X94' '4' '40%' '4000' '700' '4' '159
   "7763 at 30% is new (wasn't in old TSV) → added. Commit."
 
 echo ""
-echo "=== Group D: Edge cases for the 20% filter ==="
+echo "=== Group D: Rare types and skewed distributions ==="
 echo ""
 
-run_test "D1: barely-at-threshold" \
-  "2 of 10 = exactly 20%. Should be included." \
-  "$(make_profiles 2 "$CPU_SLOW" 8 "$CPU_FAST")" \
+run_test "D1: dominant-fast-rare-slow" \
+  "9 fast + 1 slow (90/10). Rare slow type gets rank." \
+  "$(make_profiles 9 "$CPU_FAST" 1 "$CPU_SLOW")" \
   "" \
   "7763,9V84" \
   "yes" \
-  "20% is the threshold (>=). Both included."
+  "Both ranked. 7763 at rank 1 (slowest). 9V84 at rank 2."
 
-run_test "D2: barely-below-threshold" \
-  "1 slow + 9 fast. Slow at 10% < 20%." \
-  "$(make_profiles 1 "$CPU_SLOW" 9 "$CPU_FAST")" \
-  "" \
-  "7763,9V84" \
-  "yes" \
-  "CRITICAL: slow filtered but only 1 type remains → fallback keeps all."
-
-run_test "D3: three-types-one-dominates" \
-  "1 very-slow + 1 medium + 8 fast (10/10/80)." \
+run_test "D2: three-types-one-dominates" \
+  "1 very-slow + 1 medium + 8 fast (10/10/80). All ranked." \
   "$(make_profiles 1 "$CPU_VERY_SLOW" 1 "$CPU_MEDIUM" 8 "$CPU_FAST")" \
   "" \
   "7551,9V74,9V84" \
   "yes" \
-  "Only fast (80%) passes 20% filter → 1 type → fallback to all."
+  "All 3 types get ranks. 7551 rank 1, 9V74 rank 2, 9V84 rank 3."
 
-run_test "D4: two-rare-one-common" \
-  "1 very-slow + 1 slow + 8 fast (10/10/80). Two rare slow types." \
-  "$(make_profiles 1 "$CPU_VERY_SLOW" 1 "$CPU_SLOW" 8 "$CPU_FAST")" \
+run_test "D3: many-rare-types" \
+  "1 of each of 5 types + 5 of a 6th. All included." \
+  "$(make_profiles 1 "$CPU_VERY_SLOW" 1 "$CPU_SLOW" 1 "$CPU_MEDIUM" 1 "$CPU_FAST" 1 "$CPU_VERY_FAST" 5 '{"cpu":"AMD EPYC 9V45 96-Core Processor","cpu_bench_ms":4800,"disk_write_mbs":"620","cores":4,"mem_mb":15990}')" \
   "" \
-  "7551,7763,9V84" \
+  "7551,7763,9V74,9V45,9V84,9X94" \
   "yes" \
-  "Only fast passes 20% → 1 type → fallback to all."
-
-run_test "D5: all-above-20" \
-  "3 slow + 3 medium + 4 fast (30/30/40). All common." \
-  "$(make_profiles 3 "$CPU_SLOW" 3 "$CPU_MEDIUM" 4 "$CPU_FAST")" \
-  "" \
-  "7763,9V74,9V84" \
-  "yes" \
-  "All pass filter. Row1=7763 gates 30%."
+  "6 types ranked. Every runner gets a meaningful rank instead of defaulting to 0."
 
 echo ""
 echo "=== Group E: Future scenarios — wider spreads ==="
@@ -422,52 +402,31 @@ run_test "E1: four-type-gradual" \
   "" \
   "7551,7763,9V74,9V84" \
   "yes" \
-  "All >= 20%. Row1=7551 gates 30%. ACTION LIMITATION: 7763 (30%) also slow."
+  "4 ranks. Ranking defers all slower types to faster ones."
 
 run_test "E2: two-slow-one-fast" \
-  "4 very-slow + 4 slow + 2 fast (40/40/20). Two slow types." \
+  "4 very-slow + 4 slow + 2 fast (40/40/20). Two slow types both ranked." \
   "$(make_profiles 4 "$CPU_VERY_SLOW" 4 "$CPU_SLOW" 2 "$CPU_FAST")" \
   "" \
   "7551,7763,9V84" \
   "yes" \
-  "Row1=7551 gates 40%. ACTION LIMITATION: 7763 (40%) also slow, ungated."
+  "Both slow types get low ranks. Fast type at rank 3 wins. No more single-pattern limitation."
 
 run_test "E3: staircase-five-types" \
-  "3+2+2+2+1 = 30/20/20/20/10. Gradual performance staircase." \
+  "3+2+2+2+1 = full 5-type staircase." \
   "$(make_profiles 3 "$CPU_VERY_SLOW" 2 "$CPU_SLOW" 2 "$CPU_MEDIUM" 2 "$CPU_FAST" 1 "$CPU_VERY_FAST")" \
   "" \
-  "7551,7763,9V74,9V84" \
+  "7551,7763,9V74,9V84,9X94" \
   "yes" \
-  "9X94 (10%) filtered. Row1=7551 gates 30%."
+  "All 5 types ranked. Full performance staircase."
 
-run_test "E4: many-types-no-majority" \
+run_test "E4: equal-fragmented" \
   "2 each of 5 types. Equal fragmented pool." \
   "$(make_profiles 2 "$CPU_VERY_SLOW" 2 "$CPU_SLOW" 2 "$CPU_MEDIUM" 2 "$CPU_FAST" 2 "$CPU_VERY_FAST")" \
   "" \
   "7551,7763,9V74,9V84,9X94" \
   "yes" \
-  "All at 20%. Row1=7551 gates 20%. 80% proceed."
-
-echo ""
-echo "=== Group F: Action-side improvement scenarios ==="
-echo "=== (These document cases where TSV ranking + action changes would help) ==="
-echo ""
-
-run_test "F1: ranking-would-help" \
-  "3 very-slow + 3 slow + 4 fast. Single pattern gates only 30%." \
-  "$(make_profiles 3 "$CPU_VERY_SLOW" 3 "$CPU_SLOW" 4 "$CPU_FAST")" \
-  "" \
-  "7551,7763,9V84" \
-  "yes" \
-  "Row1=7551 gates 30%. 7763 (30%) also slow. WITH RANKING: all slow types would be gated."
-
-run_test "F2: ranking-not-needed" \
-  "6 slow + 4 fast. One clear slow type, one clear fast." \
-  "$(make_profiles 6 "$CPU_SLOW" 4 "$CPU_FAST")" \
-  "" \
-  "7763,9V84" \
-  "yes" \
-  "Row1=7763 gates 60%. Fast type proceeds. Single pattern is optimal here."
+  "5 ranks. Fastest type (rank 5) wins via ranking."
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 
@@ -475,12 +434,6 @@ echo ""
 echo "════════════════════════════════════════════════════════"
 printf "  Results: %d passed, %d failed, %d total\n" "$PASS" "$FAIL" "$TOTAL"
 echo "════════════════════════════════════════════════════════"
-
-# Highlight cases where the action's single-pattern design is the bottleneck
-echo ""
-echo "Cases marked ACTION LIMITATION show where a TSV-ranking approach"
-echo "(runner reads its position, defers to faster-ranked siblings)"
-echo "would outperform the current single-pattern gate."
 echo ""
 
 exit "$FAIL"
