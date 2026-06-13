@@ -20,19 +20,12 @@ TOTAL=0
 # CPU types used in tests (realistic model names that the id-extraction jq handles).
 # The jq strips "AMD EPYC " prefix and " NN-Core Processor" suffix to get the short id.
 #
-# IMPORTANT: CPU and disk speeds are intentionally uncorrelated — matching real-world
-# observations where newer CPUs can have worse disk I/O. Sorting by disk I/O
-# (the actual bottleneck for builds) gives a DIFFERENT order than sorting by CPU.
-#
-# By CPU (slowest first):  7551 > 7763 > 9V74 > 9V84 > 9X94
-# By disk (slowest first): 9V74 < 9V84 < 7551 < 7763 < 9X94
-#
-# The sort key is disk I/O (ascending = worst disk first), so the expected
-# order in most tests is: 9V74, 9V84, 7551, 7763, 9X94
-CPU_VERY_SLOW='{"cpu":"AMD EPYC 7551 32-Core Processor","cpu_bench_ms":7000,"disk_write_mbs":"500","cores":4,"mem_mb":15990}'
+# Sorted by CPU benchmark (slowest first = highest avg_ms):
+#   7551 (7000ms) > 7763 (5500ms) > 9V74 (5000ms) > 9V84 (4500ms) > 9X94 (4000ms)
+CPU_VERY_SLOW='{"cpu":"AMD EPYC 7551 32-Core Processor","cpu_bench_ms":7000,"disk_write_mbs":"400","cores":4,"mem_mb":15990}'
 CPU_SLOW='{"cpu":"AMD EPYC 7763 64-Core Processor","cpu_bench_ms":5500,"disk_write_mbs":"580","cores":4,"mem_mb":15990}'
-CPU_MEDIUM='{"cpu":"AMD EPYC 9V74 80-Core Processor","cpu_bench_ms":5000,"disk_write_mbs":"400","cores":4,"mem_mb":15990}'
-CPU_FAST='{"cpu":"AMD EPYC 9V84 96-Core Processor","cpu_bench_ms":4500,"disk_write_mbs":"450","cores":4,"mem_mb":15990}'
+CPU_MEDIUM='{"cpu":"AMD EPYC 9V74 80-Core Processor","cpu_bench_ms":5000,"disk_write_mbs":"600","cores":4,"mem_mb":15990}'
+CPU_FAST='{"cpu":"AMD EPYC 9V84 96-Core Processor","cpu_bench_ms":4500,"disk_write_mbs":"650","cores":4,"mem_mb":15990}'
 CPU_VERY_FAST='{"cpu":"AMD EPYC 9X94 128-Core Processor","cpu_bench_ms":4000,"disk_write_mbs":"700","cores":4,"mem_mb":15990}'
 
 # ── jq expressions (must match runner-profile.yaml) ─────────────────────────
@@ -54,7 +47,7 @@ JQ_BUILD_FRESH='
   (map(select(.pct_num >= 20))) as $common |
   (if ($common | length) > 1 then $common else . end) |
   map(del(.pct_num)) |
-  sort_by(.avg_disk)
+  sort_by(-.avg_ms)
 '
 
 # Step 2: prune-merge-decide (fresh + old → result)
@@ -79,7 +72,7 @@ JQ_MERGE='
     ),
     $new_entries[]
   ] |
-  sort_by(.avg_disk) |
+  sort_by(-.avg_ms) |
   { pruned: $prune.pruned,
     added: ($new_entries | length),
     entries: [.[] | {
@@ -210,55 +203,55 @@ echo "=== Group A: Fresh start (no existing TSV) ==="
 echo ""
 
 run_test "A1: two-type-balanced-60-40" \
-  "6 slow-disk(7763) + 4 slower-disk(9V74). 9V74 has worst disk." \
+  "6 slow + 4 medium. Clear majority slow type." \
   "$(make_profiles 6 "$CPU_SLOW" 4 "$CPU_MEDIUM")" \
   "" \
-  "9V74,7763" \
+  "7763,9V74" \
   "yes" \
-  "Row1=9V74 (400 MB/s disk) gates 40%. 7763 (580 MB/s) proceeds."
+  "Row1=7763 gates 60% of runners. Optimal."
 
 run_test "A2: two-type-equal-50-50" \
-  "5 of each type. Equal split, sorted by disk." \
+  "5 slow + 5 medium. Equal split." \
   "$(make_profiles 5 "$CPU_SLOW" 5 "$CPU_MEDIUM")" \
   "" \
-  "9V74,7763" \
+  "7763,9V74" \
   "yes" \
-  "Row1=9V74 gates 50%. 7763 has faster disk, proceeds."
+  "Row1=7763 gates 50%. Sibling polling picks the 9V74 winner."
 
 run_test "A3: two-type-dominant-fast-90-10" \
-  "9 fast-disk(9V84) + 1 faster-disk(7763). Rare type has better disk." \
+  "9 fast + 1 slow. Rare slow type." \
   "$(make_profiles 9 "$CPU_FAST" 1 "$CPU_SLOW")" \
   "" \
-  "9V84,7763" \
+  "7763,9V84" \
   "yes" \
-  "CRITICAL: row1 must be the slow-disk type (9V84, 450 MB/s), not the rare fast-disk type. 20% filter must not invert this."
+  "CRITICAL: row1 must be the slow type, not the dominant fast type."
 
 run_test "A4: three-type-all-common" \
-  "4 types at 40/30/30. All significant." \
+  "4 slow + 3 medium + 3 fast (40/30/30). All significant." \
   "$(make_profiles 4 "$CPU_SLOW" 3 "$CPU_MEDIUM" 3 "$CPU_FAST")" \
   "" \
-  "9V74,9V84,7763" \
+  "7763,9V74,9V84" \
   "yes" \
-  "Row1=9V74 (400 MB/s) gates 30%. 9V84 and 7763 proceed."
+  "Row1=7763 gates 40%. Medium and fast proceed."
 
-run_test "A5: three-type-rare-slowest-disk" \
-  "1 slowest-disk(9V74) + 5 mid(7763) + 4 fast-disk(7551). Rare outlier." \
-  "$(make_profiles 1 "$CPU_MEDIUM" 5 "$CPU_SLOW" 4 "$CPU_VERY_SLOW")" \
+run_test "A5: three-type-rare-slowest" \
+  "1 very-slow + 5 slow + 4 medium (10/50/40). Rare outlier slowest." \
+  "$(make_profiles 1 "$CPU_VERY_SLOW" 5 "$CPU_SLOW" 4 "$CPU_MEDIUM")" \
   "" \
-  "7551,7763" \
+  "7763,9V74" \
   "yes" \
-  "9V74 at 10% filtered. Gate 7551 (40%, 500 MB/s disk) instead. Row1=7551."
+  "Optimal: filter out 10% very-slow. Gate 7763 (50%) instead."
 
-run_test "A6: three-type-rare-fastest-disk" \
-  "5 slow-disk(9V74) + 4 mid(7763) + 1 fast-disk(9X94). Rare fast type." \
-  "$(make_profiles 5 "$CPU_MEDIUM" 4 "$CPU_SLOW" 1 "$CPU_VERY_FAST")" \
+run_test "A6: three-type-rare-fastest" \
+  "5 slow + 4 medium + 1 fast (50/40/10). Rare fast type." \
+  "$(make_profiles 5 "$CPU_SLOW" 4 "$CPU_MEDIUM" 1 "$CPU_FAST")" \
   "" \
-  "9V74,7763" \
+  "7763,9V74" \
   "yes" \
-  "9X94 at 10% filtered. Gate 9V74 (50%). Rare fast-disk type not worth tracking."
+  "Optimal: filter out 10% fast. Gate 7763 (50%)."
 
 run_test "A7: single-type" \
-  "10 of one type (100%). Homogeneous pool." \
+  "10 slow (100%). Homogeneous pool." \
   "$(make_profiles 10 "$CPU_SLOW")" \
   "" \
   "7763" \
@@ -269,43 +262,42 @@ run_test "A8: five-types-all-20pct" \
   "2 each of 5 types (20% each). Fragmented pool." \
   "$(make_profiles 2 "$CPU_VERY_SLOW" 2 "$CPU_SLOW" 2 "$CPU_MEDIUM" 2 "$CPU_FAST" 2 "$CPU_VERY_FAST")" \
   "" \
-  "9V74,9V84,7551,7763,9X94" \
+  "7551,7763,9V74,9V84,9X94" \
   "yes" \
-  "All at exactly 20% — all kept. Row1=9V74 (400 MB/s) gates 20%."
+  "All at exactly 20% — all kept. Row1=7551 gates 20%."
 
 run_test "A9: five-types-sub-20" \
   "Mixed distribution, one type at 10%." \
   "$(make_profiles 1 "$CPU_VERY_SLOW" 2 "$CPU_SLOW" 2 "$CPU_MEDIUM" 2 "$CPU_FAST" 3 "$CPU_VERY_FAST")" \
   "" \
-  "9V74,9V84,7763,9X94" \
+  "7763,9V74,9V84,9X94" \
   "yes" \
-  "7551 at 10% filtered. Row1=9V74 (400 MB/s) gates 20%."
+  "7551 at 10% filtered. Row1=7763 gates 20%."
 
 run_test "A10: four-type-spread" \
   "4+3+2+1 distribution (40/30/20/10)." \
   "$(make_profiles 4 "$CPU_SLOW" 3 "$CPU_MEDIUM" 2 "$CPU_FAST" 1 "$CPU_VERY_FAST")" \
   "" \
-  "9V74,9V84,7763" \
+  "7763,9V74,9V84" \
   "yes" \
-  "9X94 (10%) filtered. Row1=9V74 (400 MB/s) gates 30%."
+  "9X94 (10%) filtered. Row1=7763 gates 40%."
 
 run_test "A11: extreme-skew-95-5" \
-  "19 of one type + 1 of another. Extreme skew." \
+  "19 fast + 1 slow out of 20. Extreme skew." \
   "$(make_profiles 19 "$CPU_FAST" 1 "$CPU_SLOW")" \
   "" \
-  "9V84,7763" \
+  "7763,9V84" \
   "yes" \
-  "CRITICAL: same as A3. Slow-disk type must be row1 despite 5% share."
+  "CRITICAL: same as A3. Slow type must be row1 despite 5% share."
 
 echo ""
 echo "=== Group B: Steady state (existing TSV, repeat runs) ==="
 echo ""
 
-# Old TSV in disk-sorted order (9V74 has worse disk than 7763)
 OLD_TSV_STANDARD="$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-  '9V74' '4' '40%' '5037' '403' '4' '15990' 'AMD EPYC 9V74 80-Core Processor')
+  '7763' '6' '60%' '5276' '584' '4' '15990' 'AMD EPYC 7763 64-Core Processor')
 $(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-  '7763' '6' '60%' '5276' '584' '4' '15990' 'AMD EPYC 7763 64-Core Processor')"
+  '9V74' '4' '40%' '5037' '403' '4' '15990' 'AMD EPYC 9V74 80-Core Processor')"
 
 OLD_TSV_STANDARD_WITH_HEADER="# cpu_id	count	pct	avg_bench_ms	avg_disk_mbs	cores	mem_mb	full_model
 ${OLD_TSV_STANDARD}"
@@ -314,24 +306,24 @@ run_test "B1: no-change-same-benchmarks" \
   "Same types, same distribution. No change." \
   "$(make_profiles 6 "$CPU_SLOW" 4 "$CPU_MEDIUM")" \
   "$OLD_TSV_STANDARD_WITH_HEADER" \
-  "9V74,7763" \
+  "7763,9V74" \
   "no" \
-  "Benchmark numbers updated in memory but not committed. File unchanged on disk."
+  "Benchmark numbers updated in memory but not committed."
 
 run_test "B2: benchmark-jitter" \
-  "Same types, disk benchmarks fluctuated. Same pool." \
+  "Same types, benchmarks fluctuated. Same pool." \
   "$(make_profiles 5 '{"cpu":"AMD EPYC 7763 64-Core Processor","cpu_bench_ms":4900,"disk_write_mbs":"600","cores":4,"mem_mb":15990}' \
                    5 '{"cpu":"AMD EPYC 9V74 80-Core Processor","cpu_bench_ms":5100,"disk_write_mbs":"550","cores":4,"mem_mb":15990}')" \
   "$OLD_TSV_STANDARD_WITH_HEADER" \
   "9V74,7763" \
   "no" \
-  "Disk speeds jittered but same order (9V74 still slower). No commit."
+  "Sort order flips from jitter but commit suppressed (pruned=0, added=0)."
 
 run_test "B3: count-shift" \
   "Same types, distribution shifted from 60/40 to 50/50." \
   "$(make_profiles 5 "$CPU_SLOW" 5 "$CPU_MEDIUM")" \
   "$OLD_TSV_STANDARD_WITH_HEADER" \
-  "9V74,7763" \
+  "7763,9V74" \
   "no" \
   "Count/pct changes but same types. No commit."
 
@@ -340,39 +332,39 @@ echo "=== Group C: Structural changes ==="
 echo ""
 
 run_test "C1: new-common-type-appears" \
-  "Old has 9V74+7763. Fresh adds 9V84 at 30%." \
+  "Old has slow+medium. Fresh adds a common fast type." \
   "$(make_profiles 4 "$CPU_SLOW" 3 "$CPU_MEDIUM" 3 "$CPU_FAST")" \
   "$OLD_TSV_STANDARD_WITH_HEADER" \
-  "9V74,9V84,7763" \
+  "7763,9V74,9V84" \
   "yes" \
   "New type 9V84 at 30% → added. Commit."
 
 run_test "C2: new-rare-type-filtered" \
-  "Old has 9V74+7763. Fresh sees a rare new type (10%)." \
+  "Old has slow+medium. Fresh sees a rare new fast type (10%)." \
   "$(make_profiles 5 "$CPU_SLOW" 4 "$CPU_MEDIUM" 1 "$CPU_FAST")" \
   "$OLD_TSV_STANDARD_WITH_HEADER" \
-  "9V74,7763" \
+  "7763,9V74" \
   "no" \
-  "New type at 10% filtered by 20% rule. Not added. No commit."
+  "New fast type at 10% filtered by 20% rule. Not added. No commit."
 
-run_test "C3: slowest-disk-disappears" \
-  "Old has 9V74+7763. Fresh only sees 7763 (9V74 gone from pool)." \
-  "$(make_profiles 10 "$CPU_SLOW")" \
+run_test "C3: slowest-disappears" \
+  "Old has slow+medium. Fresh only sees medium (pool changed)." \
+  "$(make_profiles 10 "$CPU_MEDIUM")" \
   "$OLD_TSV_STANDARD_WITH_HEADER" \
-  "7763" \
+  "9V74" \
   "yes" \
-  "Top entry 9V74 not seen → pruned. Commit."
+  "Top entry 7763 not seen → pruned. Commit."
 
 run_test "C4: middle-unseen-stays" \
-  "Old has 3 types (disk-sorted). Fresh doesn't see the middle one." \
+  "Old has 3 types. Fresh doesn't see the middle one." \
   "$(make_profiles 6 "$CPU_SLOW" 4 "$CPU_FAST")" \
   "# cpu_id	count	pct	avg_bench_ms	avg_disk_mbs	cores	mem_mb	full_model
-$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' '9V84' '2' '20%' '4500' '450' '4' '15990' 'AMD EPYC 9V84 96-Core Processor')
-$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' '7551' '3' '30%' '7000' '500' '4' '15990' 'AMD EPYC 7551 32-Core Processor')
-$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' '7763' '5' '50%' '5500' '580' '4' '15990' 'AMD EPYC 7763 64-Core Processor')" \
-  "9V84,7551,7763" \
+$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' '7763' '5' '50%' '5500' '580' '4' '15990' 'AMD EPYC 7763 64-Core Processor')
+$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' '9V74' '3' '30%' '5000' '600' '4' '15990' 'AMD EPYC 9V74 80-Core Processor')
+$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' '9V84' '2' '20%' '4500' '650' '4' '15990' 'AMD EPYC 9V84 96-Core Processor')" \
+  "7763,9V74,9V84" \
   "no" \
-  "7551 not seen but below seen top entry (9V84 seen via CPU_FAST) → stays. No commit."
+  "9V74 not seen but below a seen top entry → stays. No commit."
 
 run_test "C5: complete-pool-turnover" \
   "Old pool entirely replaced by new CPU types." \
@@ -386,9 +378,9 @@ run_test "C6: old-type-returns" \
   "After a previous turnover, an old type reappears." \
   "$(make_profiles 3 "$CPU_SLOW" 4 "$CPU_FAST" 3 "$CPU_VERY_FAST")" \
   "# cpu_id	count	pct	avg_bench_ms	avg_disk_mbs	cores	mem_mb	full_model
-$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' '9V84' '6' '60%' '4500' '450' '4' '15990' 'AMD EPYC 9V84 96-Core Processor')
+$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' '9V84' '6' '60%' '4500' '650' '4' '15990' 'AMD EPYC 9V84 96-Core Processor')
 $(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' '9X94' '4' '40%' '4000' '700' '4' '15990' 'AMD EPYC 9X94 128-Core Processor')" \
-  "9V84,7763,9X94" \
+  "7763,9V84,9X94" \
   "yes" \
   "7763 at 30% is new (wasn't in old TSV) → added. Commit."
 
@@ -400,77 +392,77 @@ run_test "D1: barely-at-threshold" \
   "2 of 10 = exactly 20%. Should be included." \
   "$(make_profiles 2 "$CPU_SLOW" 8 "$CPU_FAST")" \
   "" \
-  "9V84,7763" \
+  "7763,9V84" \
   "yes" \
-  "20% is the threshold (>=). Both included. Row1=9V84 (450 MB/s)."
+  "20% is the threshold (>=). Both included."
 
 run_test "D2: barely-below-threshold" \
-  "1 slow-disk + 9 fast-disk. Slow at 10% < 20%." \
+  "1 slow + 9 fast. Slow at 10% < 20%." \
   "$(make_profiles 1 "$CPU_SLOW" 9 "$CPU_FAST")" \
   "" \
-  "9V84,7763" \
+  "7763,9V84" \
   "yes" \
-  "CRITICAL: 7763 filtered but only 1 type remains → fallback keeps all. Row1=9V84 (slower disk)."
+  "CRITICAL: slow filtered but only 1 type remains → fallback keeps all."
 
 run_test "D3: three-types-one-dominates" \
-  "1+1+8 split (10/10/80). One dominant type." \
+  "1 very-slow + 1 medium + 8 fast (10/10/80)." \
   "$(make_profiles 1 "$CPU_VERY_SLOW" 1 "$CPU_MEDIUM" 8 "$CPU_FAST")" \
   "" \
-  "9V74,9V84,7551" \
+  "7551,9V74,9V84" \
   "yes" \
-  "Only 9V84 (80%) passes 20% filter → 1 type → fallback to all. Row1=9V74 (400 MB/s)."
+  "Only fast (80%) passes 20% filter → 1 type → fallback to all."
 
 run_test "D4: two-rare-one-common" \
-  "1+1+8 split (10/10/80). Two rare types." \
+  "1 very-slow + 1 slow + 8 fast (10/10/80). Two rare slow types." \
   "$(make_profiles 1 "$CPU_VERY_SLOW" 1 "$CPU_SLOW" 8 "$CPU_FAST")" \
   "" \
-  "9V84,7551,7763" \
+  "7551,7763,9V84" \
   "yes" \
-  "Only 9V84 passes 20% → 1 type → fallback to all. Row1=9V84 (450 MB/s)."
+  "Only fast passes 20% → 1 type → fallback to all."
 
 run_test "D5: all-above-20" \
-  "3+3+4 split (30/30/40). All common." \
+  "3 slow + 3 medium + 4 fast (30/30/40). All common." \
   "$(make_profiles 3 "$CPU_SLOW" 3 "$CPU_MEDIUM" 4 "$CPU_FAST")" \
   "" \
-  "9V74,9V84,7763" \
+  "7763,9V74,9V84" \
   "yes" \
-  "All pass filter. Row1=9V74 (400 MB/s) gates 30%."
+  "All pass filter. Row1=7763 gates 30%."
 
 echo ""
 echo "=== Group E: Future scenarios — wider spreads ==="
 echo ""
 
 run_test "E1: four-type-gradual" \
-  "3+3+2+2 (30/30/20/20). Gradual disk speed spread." \
+  "3 very-slow + 3 slow + 2 medium + 2 fast (30/30/20/20)." \
   "$(make_profiles 3 "$CPU_VERY_SLOW" 3 "$CPU_SLOW" 2 "$CPU_MEDIUM" 2 "$CPU_FAST")" \
   "" \
-  "9V74,9V84,7551,7763" \
+  "7551,7763,9V74,9V84" \
   "yes" \
-  "All >= 20%. Row1=9V74 (400 MB/s) gates 20%. ACTION LIMITATION: 9V84 (450 MB/s, 20%) also slow disk — single pattern can only gate one."
+  "All >= 20%. Row1=7551 gates 30%. ACTION LIMITATION: 7763 (30%) also slow."
 
-run_test "E2: two-slow-disk-one-fast" \
-  "4+4+2 (40/40/20). Two types with slow disk." \
+run_test "E2: two-slow-one-fast" \
+  "4 very-slow + 4 slow + 2 fast (40/40/20). Two slow types." \
   "$(make_profiles 4 "$CPU_VERY_SLOW" 4 "$CPU_SLOW" 2 "$CPU_FAST")" \
   "" \
-  "9V84,7551,7763" \
+  "7551,7763,9V84" \
   "yes" \
-  "Row1=9V84 (450 MB/s) gates ... wait, 7551 has 500 MB/s disk. ACTION LIMITATION: single pattern misses the other slow-disk type."
+  "Row1=7551 gates 40%. ACTION LIMITATION: 7763 (40%) also slow, ungated."
 
 run_test "E3: staircase-five-types" \
   "3+2+2+2+1 = 30/20/20/20/10. Gradual performance staircase." \
   "$(make_profiles 3 "$CPU_VERY_SLOW" 2 "$CPU_SLOW" 2 "$CPU_MEDIUM" 2 "$CPU_FAST" 1 "$CPU_VERY_FAST")" \
   "" \
-  "9V74,9V84,7551,7763" \
+  "7551,7763,9V74,9V84" \
   "yes" \
-  "9X94 (10%) filtered. Row1=9V74 (400 MB/s) gates 20%."
+  "9X94 (10%) filtered. Row1=7551 gates 30%."
 
 run_test "E4: many-types-no-majority" \
   "2 each of 5 types. Equal fragmented pool." \
   "$(make_profiles 2 "$CPU_VERY_SLOW" 2 "$CPU_SLOW" 2 "$CPU_MEDIUM" 2 "$CPU_FAST" 2 "$CPU_VERY_FAST")" \
   "" \
-  "9V74,9V84,7551,7763,9X94" \
+  "7551,7763,9V74,9V84,9X94" \
   "yes" \
-  "All at 20%. Row1=9V74 (400 MB/s) gates 20%. 80% proceed."
+  "All at 20%. Row1=7551 gates 20%. 80% proceed."
 
 echo ""
 echo "=== Group F: Action-side improvement scenarios ==="
@@ -478,20 +470,20 @@ echo "=== (These document cases where TSV ranking + action changes would help) =
 echo ""
 
 run_test "F1: ranking-would-help" \
-  "3+3+4 split. Two slow-disk types, single pattern gates only one." \
+  "3 very-slow + 3 slow + 4 fast. Single pattern gates only 30%." \
   "$(make_profiles 3 "$CPU_VERY_SLOW" 3 "$CPU_SLOW" 4 "$CPU_FAST")" \
   "" \
-  "9V84,7551,7763" \
+  "7551,7763,9V84" \
   "yes" \
-  "Row1=9V84 gates ... WITH RANKING: runners read their TSV line and defer to faster-disk siblings. Would gate multiple slow-disk types."
+  "Row1=7551 gates 30%. 7763 (30%) also slow. WITH RANKING: all slow types would be gated."
 
 run_test "F2: ranking-not-needed" \
-  "6+4 split. One slow-disk type, one fast-disk type." \
-  "$(make_profiles 6 "$CPU_MEDIUM" 4 "$CPU_VERY_FAST")" \
+  "6 slow + 4 fast. One clear slow type, one clear fast." \
+  "$(make_profiles 6 "$CPU_SLOW" 4 "$CPU_FAST")" \
   "" \
-  "9V74,9X94" \
+  "7763,9V84" \
   "yes" \
-  "Row1=9V74 (400 MB/s) gates 60%. 9X94 (700 MB/s) proceeds. Single pattern is optimal."
+  "Row1=7763 gates 60%. Fast type proceeds. Single pattern is optimal here."
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 
