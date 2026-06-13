@@ -559,7 +559,7 @@ jobs:
           echo "Copy ${{ matrix.speedracer }}: running on $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)"
           sleep 10
 
-  verify-8copy-same-rank:
+  verify-8copy:
     needs: test-8copy
     if: always()
     runs-on: ubuntu-latest
