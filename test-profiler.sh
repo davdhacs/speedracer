@@ -50,41 +50,26 @@ JQ_BUILD_FRESH='
   sort_by(-.avg_ms)
 '
 
-# Step 2: prune-merge-decide (fresh + old → result)
+# Step 2: merge fresh + old → sorted entries
 JQ_MERGE='
-  ($fresh[0] | map(.id)) as $seen |
-  ($old[0] | length) as $total |
-  (reduce range($total) as $i (
-    {pruning: true, pruned: 0, kept: []};
-    ($old[0][$i]) as $entry |
-    if .pruning and ($seen | index($entry.id) | not) then
-      .pruned += 1
-    else
-      .pruning = false | .kept += [$entry]
-    end
-  )) as $prune |
-  ($prune.kept | map(.id)) as $old_ids |
-  [$fresh[0][] | select(.id as $id | $old_ids | index($id) | not)] as $new_entries |
+  ($old[0] | map(.id)) as $old_ids |
   [
-    ($prune.kept[] | . as $old |
-      ([$fresh[0][] | select(.id == $old.id)][0] // null) as $match |
-      if $match then $match else $old end
+    ($old[0][] | . as $entry |
+      ([$fresh[0][] | select(.id == $entry.id)][0] // null) as $match |
+      if $match then $match else $entry end
     ),
-    $new_entries[]
+    ($fresh[0][] | select(.id as $id | $old_ids | index($id) | not))
   ] |
   sort_by(-.avg_ms) |
-  { pruned: $prune.pruned,
-    added: ($new_entries | length),
-    entries: [.[] | {
-      id, full,
-      count: (.count | tostring),
-      pct: (if .pct then .pct else "\(.count)/?%" end),
-      avg_ms: (.avg_ms | tostring),
-      avg_disk: (.avg_disk | tostring),
-      cores: (.cores | tostring),
-      mem_mb: (.mem_mb | tostring)
-    }]
-  }
+  [.[] | {
+    id, full,
+    count: (.count | tostring),
+    pct: (if .pct then .pct else "\(.count)/?%" end),
+    avg_ms: (.avg_ms | tostring),
+    avg_disk: (.avg_disk | tostring),
+    cores: (.cores | tostring),
+    mem_mb: (.mem_mb | tostring)
+  }]
 '
 
 # ── Test runner ──────────────────────────────────────────────────────────────
@@ -154,26 +139,25 @@ run_test() {
   local old_json
   old_json=$(tsv_to_json "$old_tsv")
 
-  # Step 3: prune-merge-decide
-  local result
-  result=$(jq -n --argjson fresh "[$fresh_json]" --argjson old "[$old_json]" "$JQ_MERGE")
+  # Step 3: merge
+  local entries
+  entries=$(jq -n --argjson fresh "[$fresh_json]" --argjson old "[$old_json]" "$JQ_MERGE")
 
-  # Extract actual values
-  local actual_ids actual_pruned actual_added actual_commit
-  actual_ids=$(echo "$result" | jq -r '[.entries[].id] | join(",")')
-  actual_pruned=$(echo "$result" | jq -r '.pruned')
-  actual_added=$(echo "$result" | jq -r '.added')
-  if [[ "$actual_pruned" -gt 0 || "$actual_added" -gt 0 ]]; then
+  local actual_ids old_order old_count new_count actual_commit
+  actual_ids=$(echo "$entries" | jq -r '[.[].id] | join(",")')
+  old_order=$(echo "$old_json" | jq -r '[.[].id] | join(",")')
+  old_count=$(echo "$old_json" | jq 'length')
+  new_count=$(echo "$entries" | jq 'length')
+
+  if [[ "$old_order" != "$actual_ids" || "$old_count" != "$new_count" ]]; then
     actual_commit="yes"
   else
     actual_commit="no"
   fi
 
-  # Row 1 = what the action would use as slow-cpu-pattern
   local row1
-  row1=$(echo "$result" | jq -r '.entries[0].id // "NONE"')
+  row1=$(echo "$entries" | jq -r '.[0].id // "NONE"')
 
-  # Compare
   local id_ok commit_ok
   [[ "$actual_ids" == "$expected_ids" ]] && id_ok=true || id_ok=false
   [[ "$actual_commit" == "$expected_commit" ]] && commit_ok=true || commit_ok=false
@@ -189,8 +173,8 @@ run_test() {
       printf "                  actual=[%s]\n" "$actual_ids"
     fi
     if ! $commit_ok; then
-      printf "        commit: expected=%s actual=%s (pruned=%s added=%s)\n" \
-        "$expected_commit" "$actual_commit" "$actual_pruned" "$actual_added"
+      printf "        commit: expected=%s actual=%s\n" "$expected_commit" "$actual_commit"
+      printf "                old_order=[%s] new_order=[%s]\n" "$old_order" "$actual_ids"
     fi
     [[ -n "$notes" ]] && printf "        notes:  %s\n" "$notes"
   fi
@@ -310,14 +294,14 @@ run_test "B1: no-change-same-benchmarks" \
   "no" \
   "Benchmark numbers updated in memory but not committed."
 
-run_test "B2: benchmark-jitter" \
-  "Same types, benchmarks fluctuated. Same pool." \
+run_test "B2: benchmark-jitter-flips-order" \
+  "Same types, benchmarks fluctuated enough to flip order." \
   "$(make_profiles 5 '{"cpu":"AMD EPYC 7763 64-Core Processor","cpu_bench_ms":4900,"disk_write_mbs":"600","cores":4,"mem_mb":15990}' \
                    5 '{"cpu":"AMD EPYC 9V74 80-Core Processor","cpu_bench_ms":5100,"disk_write_mbs":"550","cores":4,"mem_mb":15990}')" \
   "$OLD_TSV_STANDARD_WITH_HEADER" \
   "9V74,7763" \
-  "no" \
-  "Sort order flips from jitter but commit suppressed (pruned=0, added=0)."
+  "yes" \
+  "Order flipped (9V74 now slower) → commit. Rankings changed."
 
 run_test "B3: count-shift" \
   "Same types, distribution shifted from 60/40 to 50/50." \
@@ -347,13 +331,13 @@ run_test "C2: new-rare-type-filtered" \
   "no" \
   "New fast type at 10% filtered by 20% rule. Not added. No commit."
 
-run_test "C3: slowest-disappears" \
-  "Old has slow+medium. Fresh only sees medium (pool changed)." \
+run_test "C3: type-unseen-stays" \
+  "Old has slow+medium. Fresh only sees medium. Unseen type stays." \
   "$(make_profiles 10 "$CPU_MEDIUM")" \
   "$OLD_TSV_STANDARD_WITH_HEADER" \
-  "9V74" \
-  "yes" \
-  "Top entry 7763 not seen → pruned. Commit."
+  "7763,9V74" \
+  "no" \
+  "7763 not seen but stays in TSV (no purging). Same count+order. No commit."
 
 run_test "C4: middle-unseen-stays" \
   "Old has 3 types. Fresh doesn't see the middle one." \
@@ -366,13 +350,13 @@ $(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' '9V84' '2' '20%' '4500' '650' '4' '159
   "no" \
   "9V74 not seen but below a seen top entry → stays. No commit."
 
-run_test "C5: complete-pool-turnover" \
-  "Old pool entirely replaced by new CPU types." \
+run_test "C5: new-types-added-old-stay" \
+  "All fresh types are new. Old types stay, new types added." \
   "$(make_profiles 6 "$CPU_FAST" 4 "$CPU_VERY_FAST")" \
   "$OLD_TSV_STANDARD_WITH_HEADER" \
-  "9V84,9X94" \
+  "7763,9V74,9V84,9X94" \
   "yes" \
-  "Both old types pruned from top. Both new types added. Commit."
+  "Old types kept (no purging). New types added. Count changed → commit."
 
 run_test "C6: old-type-returns" \
   "After a previous turnover, an old type reappears." \

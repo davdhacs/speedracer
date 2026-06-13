@@ -136,75 +136,58 @@ jobs:
             echo '[]' > /tmp/old.json
           fi
 
-          # Single jq: prune unseen top entries, merge fresh data, track changes
+          OLD_ORDER=$(jq -r '[.[].id] | join(",")' /tmp/old.json)
+          OLD_COUNT=$(jq 'length' /tmp/old.json)
+
+          # Merge: update seen types with fresh data, keep unseen as-is, add new
           jq -n --slurpfile old /tmp/old.json --slurpfile fresh /tmp/fresh.json '
-            ($fresh[0] | map(.id)) as $seen |
-
-            # Prune: drop leading old entries not in $seen
-            ($old[0] | length) as $total |
-            (reduce range($total) as $i (
-              {pruning: true, pruned: 0, kept: []};
-              ($old[0][$i]) as $entry |
-              if .pruning and ($seen | index($entry.id) | not) then
-                .pruned += 1
-              else
-                .pruning = false | .kept += [$entry]
-              end
-            )) as $prune |
-
-            # Old IDs after pruning
-            ($prune.kept | map(.id)) as $old_ids |
-
-            # New entries: in fresh but not in old (after pruning)
-            [$fresh[0][] | select(.id as $id | $old_ids | index($id) | not)] as $new_entries |
-
-            # Merge: update existing with fresh benchmarks, keep unseen as-is
+            ($old[0] | map(.id)) as $old_ids |
             [
-              ($prune.kept[] | . as $old |
-                ([$fresh[0][] | select(.id == $old.id)][0] // null) as $match |
-                if $match then $match else $old end
+              ($old[0][] | . as $entry |
+                ([$fresh[0][] | select(.id == $entry.id)][0] // null) as $match |
+                if $match then $match else $entry end
               ),
-              $new_entries[]
+              ($fresh[0][] | select(.id as $id | $old_ids | index($id) | not))
             ] |
             sort_by(-.avg_ms) |
+            [.[] | {
+              id, full,
+              count: (.count | tostring),
+              pct: (if .pct then .pct else "\(.count)/?%" end),
+              avg_ms: (.avg_ms | tostring),
+              avg_disk: (.avg_disk | tostring),
+              cores: (.cores | tostring),
+              mem_mb: (.mem_mb | tostring)
+            }]
+          ' > /tmp/merged_entries.json
 
-            # Format for output
-            { pruned: $prune.pruned,
-              added: ($new_entries | length),
-              entries: [.[] | {
-                id, full,
-                count: (.count | tostring),
-                pct: (if .pct then .pct else "\(.count)/?%" end),
-                avg_ms: (.avg_ms | tostring),
-                avg_disk: (.avg_disk | tostring),
-                cores: (.cores | tostring),
-                mem_mb: (.mem_mb | tostring)
-              }]
-            }
-          ' > /tmp/result.json
-
-          PRUNED=$(jq -r '.pruned' /tmp/result.json)
-          ADDED=$(jq -r '.added' /tmp/result.json)
-          echo "Pruned ${PRUNED} unseen top entries, added ${ADDED} new CPU types"
+          NEW_ORDER=$(jq -r '[.[].id] | join(",")' /tmp/merged_entries.json)
+          NEW_COUNT=$(jq 'length' /tmp/merged_entries.json)
 
           # Write final TSV
           {
             echo "# cpu_id	count	pct	avg_bench_ms	avg_disk_mbs	cores	mem_mb	full_model"
-            jq -r '.entries[] | "\(.id)\t\(.count)\t\(.pct)\t\(.avg_ms)\t\(.avg_disk)\t\(.cores)\t\(.mem_mb)\t\(.full)"' /tmp/result.json
+            jq -r '.[] | "\(.id)\t\(.count)\t\(.pct)\t\(.avg_ms)\t\(.avg_disk)\t\(.cores)\t\(.mem_mb)\t\(.full)"' /tmp/merged_entries.json
           } > runner-pool.tsv
 
           echo "=== runner-pool.tsv ==="
           cat runner-pool.tsv
+          echo "old: ${OLD_COUNT} entries [${OLD_ORDER}]"
+          echo "new: ${NEW_COUNT} entries [${NEW_ORDER}]"
 
-          # --- Commit only if structure changed ---
+          # --- Commit only if entry count or ordering changed ---
+          CHANGED=false
+          if [[ "$OLD_ORDER" != "$NEW_ORDER" || "$OLD_COUNT" != "$NEW_COUNT" ]]; then
+            CHANGED=true
+          fi
+
           if [[ "${{ inputs.dry-run }}" == "true" ]]; then
             echo "=== DRY RUN ==="
-            if [[ "$PRUNED" -gt 0 || "$ADDED" -gt 0 ]]; then
-              echo "WOULD COMMIT: pruned=${PRUNED} added=${ADDED}"
+            if $CHANGED; then
+              echo "WOULD COMMIT: order/count changed"
             else
-              echo "WOULD SKIP: no structural changes"
+              echo "WOULD SKIP: same entries in same order"
             fi
-            diff runner-pool.tsv /dev/stdin <<< "$(git show HEAD:runner-pool.tsv 2>/dev/null)" || true
             exit 0
           fi
 
@@ -212,15 +195,12 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add runner-pool.tsv
 
-          if [[ "$PRUNED" -gt 0 || "$ADDED" -gt 0 ]]; then
-            REASON=""
-            [[ "$PRUNED" -gt 0 ]] && REASON="pruned ${PRUNED} unseen top entries"
-            [[ "$ADDED" -gt 0 ]] && REASON="${REASON:+$REASON, }added ${ADDED} new CPU types"
+          if $CHANGED; then
             git diff --cached --quiet || {
-              git commit -m "data: runner pool profile ${DATE} (${REASON})"
+              git commit -m "data: runner pool profile ${DATE} (${NEW_ORDER})"
               git push || echo "::warning::Failed to push profile data"
             }
           else
-            echo "No structural changes (same CPU types, same ordering) — skipping commit"
+            echo "No ranking changes (same entries, same order) — skipping commit"
             git checkout -- runner-pool.tsv 2>/dev/null || true
           fi
