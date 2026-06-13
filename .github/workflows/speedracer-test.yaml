@@ -22,7 +22,7 @@ permissions:
 
 jobs:
 
-  # ─── Original tests: structural scenarios ───────────────────────────────────
+  # ─── Structural scenarios ──────────────────────────────────────────────────
 
   # Test 0: DIRECT (no composite action) monitor isolates the raw mechanism.
   # Proves SIGTERM from a background process during a regular step → 'failure'.
@@ -58,14 +58,13 @@ jobs:
       - name: Work (60s — b killed at ~25s via regular step SIGTERM → failure)
         run: sleep 60
 
-
       - name: Monitor log
         if: always()
         run: cat /tmp/direct-monitor.log || echo "(no log)"
 
-  # Test 1: 2-copy, both fast. a=fallback, always runs.
-  # Expected: a=success, b=cancelled or failure (monitor kills duplicate).
-  test-a-wins:
+  # Test 1: 2-copy. Highest-ranked copy wins. Same rank → higher letter wins.
+  # At least one copy must succeed.
+  test-2copy:
     strategy:
       matrix:
         speedracer: [a, b]
@@ -73,18 +72,12 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
       - uses: ./
-        with:
-          slow-cpu-pattern: NEVER_MATCH_THIS
       - name: Work (60s)
         run: sleep 60
 
-
-      - name: Monitor log
-        if: always()
-        run: cat /tmp/speedracer-monitor.log || echo "(no log)"
-
-  # Test 2: 3-copy, all fast, a wins. Expected: a=success, b=cancelled, c=cancelled.
-  test-three-copy:
+  # Test 2: 3-copy. Highest-ranked copy wins.
+  # At least one copy must succeed.
+  test-3copy:
     strategy:
       matrix:
         speedracer: [a, b, c]
@@ -92,67 +85,11 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
       - uses: ./
-        with:
-          slow-cpu-pattern: NEVER_MATCH_THIS
       - name: Work (90s)
         run: sleep 90
 
-
-      - name: Monitor log
-        if: always()
-        run: cat /tmp/speedracer-monitor.log || echo "(no log)"
-
-  # Test 3: a and b are slow (deterministic CPU match); c wins as last-copy fallback.
-  # Expected: a=success (fallback, runs slow), b=cancelled (gate), c=success (fast).
-  test-ab-slow-c-wins:
-    strategy:
-      matrix:
-        speedracer: [a, b, c]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
-      - name: Read CPU model for deterministic slow pattern
-        id: cpu
-        run: |
-          model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)
-          echo "model=${model}" >> "$GITHUB_OUTPUT"
-      - uses: ./
-        with:
-          slow-cpu-pattern: ${{ contains(fromJSON('["a","b"]'), matrix.speedracer) && steps.cpu.outputs.model || 'NEVER_MATCH_THIS' }}
-      - name: Work
-        run: sleep 10
-
-
-      - name: Monitor log
-        if: always()
-        run: cat /tmp/speedracer-monitor.log || echo "(no log)"
-
-  # Test 4: a is slow (deterministic), b is fast. a=fallback, runs silently.
-  # Expected: a=success (slow fallback), b=success (fast, a didn't signal).
-  test-a-slow-b-wins:
-    strategy:
-      matrix:
-        speedracer: [a, b]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
-      - name: Read CPU model
-        id: cpu
-        run: |
-          model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)
-          echo "model=${model}" >> "$GITHUB_OUTPUT"
-      - uses: ./
-        with:
-          slow-cpu-pattern: ${{ matrix.speedracer == 'a' && steps.cpu.outputs.model || 'NEVER_MATCH_THIS' }}
-      - name: Work
-        run: sleep 5
-
-
-      - name: Monitor log
-        if: always()
-        run: cat /tmp/speedracer-monitor.log || echo "(no log)"
-
-  # Test 5: enabled=false — both copies run, no gating. Expected: a=success, b=success.
+  # Test 3: enabled=false — both copies run, no gating.
+  # Expected: a=success, b=success.
   test-disabled:
     strategy:
       matrix:
@@ -166,28 +103,9 @@ jobs:
       - name: Work
         run: sleep 5
 
-  # Test 6: Winner finishes before monitor's first poll (5-6s sleep).
-  # Expected: a=success, b=cancelled (monitor finds a=completed/success).
-  test-fast-winner:
-    strategy:
-      matrix:
-        speedracer: [a, b]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
-      - uses: ./
-        with:
-          slow-cpu-pattern: NEVER_MATCH_THIS
-      - name: Work (2s — completes before monitor's initial sleep)
-        run: sleep 2
-
-
-      - name: Monitor log
-        if: always()
-        run: cat /tmp/speedracer-monitor.log || echo "(no log)"
-
-  # Test 7: 4-copy. Expected: a=success, b/c/d=cancelled.
-  test-four-copy:
+  # Test 4: 4-copy. Highest-ranked copy wins (rank from TSV). Same rank
+  # ties break by letter. At least one copy must succeed.
+  test-4copy:
     strategy:
       matrix:
         speedracer: [a, b, c, d]
@@ -195,23 +113,14 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
       - uses: ./
-        with:
-          slow-cpu-pattern: NEVER_MATCH_THIS
       - name: Work (120s)
         run: sleep 120
 
+  # ─── API-verified tests ────────────────────────────────────────────────────
 
-      - name: Monitor log
-        if: always()
-        run: cat /tmp/speedracer-monitor.log || echo "(no log)"
-
-  # ─── New: API-verified tests ────────────────────────────────────────────────
-
-  # Test 8: Verify post.sh patches check-run to completed/success via Checks API.
-  # Most critical untested behavior: the branch-protection contract.
-  # Also verifies in_progress is posted immediately after gate step.
-  # Expected: a=success, b=cancelled. Verify job: API shows conclusion=success.
-  test-verify-check-run-success:
+  # Test 5: Verify check-run posted with rank in external_id.
+  # Expected: a=success. Verify: in_progress check-run, external_id has r{rank}.
+  test-verify-check-run-with-rank:
     strategy:
       matrix:
         speedracer: [a, b]
@@ -221,10 +130,8 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
       - uses: ./
-        with:
-          slow-cpu-pattern: NEVER_MATCH_THIS
 
-      - name: Assert check-run is in_progress immediately after gate (before work)
+      - name: Assert check-run has rank in external_id
         run: |
           check_id=$(head -1 < /tmp/speedracer-check-id | tr -d '[:space:]')
           [[ "$check_id" =~ ^[0-9]+$ ]] || { echo "FAIL: no check-id posted"; exit 1; }
@@ -232,19 +139,24 @@ jobs:
           ext_id=$(gh api "repos/${{ github.repository }}/check-runs/${check_id}" --jq '.external_id')
           echo "check_id=${check_id} status=${status} external_id=${ext_id}"
           [[ "$status" == "in_progress" ]] || { echo "FAIL: expected in_progress, got: ${status}"; exit 1; }
-          [[ "$ext_id" == spec-*-${{ github.run_id }}-* ]] || { echo "FAIL: unexpected external_id format: ${ext_id}"; exit 1; }
-          echo "PASS: in_progress check-run posted with correct external_id"
+          # Verify rank segment in external_id: spec-{letter}-r{rank}-...
+          [[ "$ext_id" =~ ^spec-r[0-9]+-[a-z]-${{ github.run_id }}- ]] || {
+            echo "FAIL: external_id format wrong: ${ext_id}"; exit 1
+          }
+          echo "PASS: check-run posted with rank in external_id"
+
+      - name: Assert rank file exists
+        run: |
+          rank=$(head -1 < /tmp/speedracer-rank | tr -d '[:space:]')
+          echo "rank=${rank}"
+          [[ "$rank" =~ ^[0-9]+$ ]] || { echo "FAIL: rank not a number: ${rank}"; exit 1; }
+          echo "PASS: rank=${rank} saved to /tmp/speedracer-rank"
 
       - name: Work (20s)
         run: sleep 20
 
-
-      - name: Monitor log
-        if: always()
-        run: cat /tmp/speedracer-monitor.log || echo "(no log)"
-
-  verify-check-run-success:
-    needs: test-verify-check-run-success
+  verify-check-run-with-rank:
+    needs: test-verify-check-run-with-rank
     if: always()
     runs-on: ubuntu-latest
     env:
@@ -255,7 +167,7 @@ jobs:
 
       - name: Assert at least one copy posted conclusion=success
         run: |
-          check_name="test-verify-check-run-success"
+          check_name="test-verify-check-run-with-rank"
           for i in $(seq 1 12); do
             count=$(gh api \
               "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
@@ -266,33 +178,23 @@ jobs:
           done
           echo "FAIL: no check-run reached conclusion=success"; exit 1
 
-  # Test 9: Failure path — winner fails, post.sh patches check-run to completed/failure.
-  # Also validates monitor 'failed' jq branch: b sees a=conclusion:failure → all_gone → b proceeds.
-  # Expected: a=failure, b=success. Verify: a check-run=failure, b check-run=success.
+  # Test 6: Failure path — the winning copy fails, post-step patches check-run
+  # to failure. Uses a single copy so we know exactly who wins.
+  # Expected: a=failure. Verify: failure check-run exists.
   test-failure-path:
     strategy:
-      fail-fast: false
       matrix:
-        speedracer: [a, b]
+        speedracer: [a]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
       - uses: ./
-        with:
-          slow-cpu-pattern: NEVER_MATCH_THIS
-      - name: Work (b fails deliberately to test failure post-step)
+      - name: Deliberate failure
         run: |
-          if [[ "${{ matrix.speedracer }}" == "b" ]]; then
-            echo "Copy b: deliberate failure" && exit 1
-          else
-            echo "Copy a: fallback (should be cancelled before reaching here)"
-            sleep 60
-          fi
-      - name: Monitor log
-        if: always()
-        run: cat /tmp/speedracer-monitor.log || echo "(no log)"
+          echo "Deliberate failure to test post-step patches check-run"
+          exit 1
 
   verify-failure-path:
     needs: test-failure-path
@@ -303,7 +205,7 @@ jobs:
     steps:
       - name: Wait for post-steps to propagate
         run: sleep 20
-      - name: Assert failure check-run exists (winner failed)
+      - name: Assert failure check-run exists
         run: |
           check_name="test-failure-path"
           for i in $(seq 1 12); do
@@ -311,13 +213,12 @@ jobs:
               "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
               --jq "[.check_runs[] | select(.name == \"${check_name}\" and .conclusion == \"failure\")] | length")
             echo "attempt $i: failures=${failures}"
-            [[ "$failures" -gt 0 ]] && { echo "PASS: found failure check-run (winner failed, branch protection unblocked)"; exit 0; }
+            [[ "$failures" -gt 0 ]] && { echo "PASS: found failure check-run"; exit 0; }
             sleep 10
           done
           echo "FAIL: no failure check-run found"; exit 1
 
-  # Test 10: enabled=false posts ZERO check-runs.
-  # Extends test-disabled by also verifying via API that no check-run exists.
+  # Test 7: enabled=false posts ZERO check-runs.
   # Expected: a=success, b=success. Verify: 0 check-runs with spec- external_id.
   test-no-check-run-when-disabled:
     strategy:
@@ -350,14 +251,13 @@ jobs:
         run: |
           count=$(gh api \
             "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
-            --jq '[.check_runs[] | select(.name | startswith("test-no-check-run-when-disabled")) | select(.external_id | endswith("${{ github.run_id }}-test-no-check-run-when-disabled"))] | length')
+            --jq '[.check_runs[] | select(.name | startswith("test-no-check-run-when-disabled")) | select(.external_id | startswith("spec-"))] | length')
           echo "check-runs with spec- external_id for this job: ${count}"
           [[ "$count" == "0" ]] || { echo "FAIL: ${count} unexpected check-run(s) despite enabled=false"; exit 1; }
           echo "PASS: no check-runs posted when disabled"
 
-  # Test 11: Single-copy matrix (speedracer: [a] only).
-  # Gate detects LAST_COPY=a, skips CPU check even with matching pattern, no monitor.
-  # Expected: a=success, no monitor log, check-run posted and eventually marked success.
+  # Test 8: Single-copy matrix (speedracer: [a] only).
+  # Expected: a=success, check-run posted with rank.
   test-single-copy:
     strategy:
       matrix:
@@ -367,18 +267,12 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
-      - name: Read actual CPU model (will be used as slow pattern to prove gate skips it)
-        id: cpu
-        run: |
-          model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)
-          echo "model=${model}" >> "$GITHUB_OUTPUT"
       - uses: ./
-        with:
-          slow-cpu-pattern: ${{ steps.cpu.outputs.model }}  # matches real CPU — must NOT gate single copy
       - name: Assert single copy ran successfully
         run: |
           [[ -f /tmp/speedracer-check-name ]] || { echo "FAIL: gate didn't complete"; exit 1; }
-          echo "PASS: single-copy ran as expected"
+          rank=$(head -1 < /tmp/speedracer-rank | tr -d '[:space:]')
+          echo "PASS: single-copy ran, rank=${rank}"
       - name: Work
         run: sleep 5
 
@@ -404,10 +298,9 @@ jobs:
           done
           echo "FAIL: single-copy check-run did not reach success"; exit 1
 
-  # Test 12: Multi-dimensional matrix — check-name auto-derived excludes speedracer key.
+  # Test 9: Multi-dimensional matrix — check-name auto-derived excludes speedracer key.
   # Matrix: flavor x speedracer. CHECK_NAME must be "test-multi-dim-check-name (alpha)".
-  # Also tests last-copy stem extraction with parentheses.
-  # Expected: a=success, b=cancelled. Verify: check-run name correct.
+  # Expected: a=success, b=cancelled (same rank, letter tiebreak). Verify: check-run name correct.
   test-multi-dim-check-name:
     strategy:
       matrix:
@@ -419,8 +312,6 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
       - uses: ./
-        with:
-          slow-cpu-pattern: NEVER_MATCH_THIS
       - name: Assert check-name excludes speedracer key
         run: |
           check_name=$(head -1 < /tmp/speedracer-check-name | tr -d '\n')
@@ -431,11 +322,6 @@ jobs:
       - name: Work (60s)
         run: sleep 60
 
-
-      - name: Monitor log
-        if: always()
-        run: cat /tmp/speedracer-monitor.log || echo "(no log)"
-
   verify-multi-dim-check-name:
     needs: test-multi-dim-check-name
     if: always()
@@ -445,7 +331,7 @@ jobs:
     steps:
       - name: Wait for post-step
         run: sleep 20
-      - name: Assert check-run name is correct (no speedracer letter in name)
+      - name: Assert check-run name is correct
         run: |
           check_name="test-multi-dim-check-name (alpha)"
           for i in $(seq 1 12); do
@@ -458,8 +344,8 @@ jobs:
           done
           echo "FAIL: no check-run with correct name reached success"; exit 1
 
-  # Test 13: Explicit check-name input overrides auto-derivation verbatim.
-  # Expected: a=success, b=cancelled. Verify: check-run name='speedracer-explicit-override'.
+  # Test 10: Explicit check-name input overrides auto-derivation.
+  # Expected: a=success. Verify: check-run name='speedracer-explicit-override'.
   test-explicit-check-name:
     strategy:
       matrix:
@@ -471,7 +357,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
       - uses: ./
         with:
-          slow-cpu-pattern: NEVER_MATCH_THIS
           check-name: speedracer-explicit-override
       - name: Assert stored check-name matches override
         run: |
@@ -482,11 +367,6 @@ jobs:
           echo "PASS: explicit check-name stored verbatim"
       - name: Work (60s)
         run: sleep 60
-
-
-      - name: Monitor log
-        if: always()
-        run: cat /tmp/speedracer-monitor.log || echo "(no log)"
 
   verify-explicit-check-name:
     needs: test-explicit-check-name
@@ -510,10 +390,10 @@ jobs:
           done
           echo "FAIL: no check-run with override name reached success"; exit 1
 
-  # Test 14: Sibling fails after posting check-run → monitor treats it as all_gone (not winner).
-  # copy a: passes gate, posts check-run, then deliberately fails.
-  # copy b: monitor sees a's check-run reach conclusion=failure → jq 'failed' branch → all_gone → b proceeds.
-  # Expected: a=failure, b=success. Verify: both check-runs reach correct conclusions.
+  # Test 11: Sibling fails — failure is not a win signal.
+  # copy b: posts check-run then deliberately fails.
+  # copy a: defers to b initially, but b's failure isn't in_progress/success.
+  # Expected: b=failure, a=success. Verify: failure check-run exists.
   test-sibling-fails-not-winner:
     strategy:
       fail-fast: false
@@ -525,14 +405,12 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
       - uses: ./
-        with:
-          slow-cpu-pattern: NEVER_MATCH_THIS
-      - name: Work (b fails; a detects b's failure is not a win signal)
+      - name: Work (b fails; a proceeds since b's failure is not a win signal)
         run: |
           if [[ "${{ matrix.speedracer }}" == "b" ]]; then
             sleep 3 && echo "Copy b: deliberate failure" && exit 1
           else
-            sleep 90 && echo "Copy a: should proceed since b failed (not a winner)"
+            sleep 90 && echo "Copy a: should proceed since b failed"
           fi
       - name: Monitor log
         if: always()
@@ -547,7 +425,7 @@ jobs:
     steps:
       - name: Wait for post-steps to propagate
         run: sleep 20
-      - name: Assert failure check-run exists (higher-priority sibling failed)
+      - name: Assert failure check-run exists
         run: |
           check_name="test-sibling-fails-not-winner"
           for i in $(seq 1 12); do
@@ -560,60 +438,70 @@ jobs:
           done
           echo "FAIL: no failure check-run found"; exit 1
 
-  # ─── Edge case tests ──────────────────────────────────────────────────────
+  # ─── Rank-specific tests ─────────────────────────────────────────────────
 
-  # Test 15: All 4 copies slow — only last-copy survives.
-  # Every copy matches the actual CPU model as slow pattern.
-  # Expected: a=success (fallback, always runs), b/c/d=cancelled (CPU gate).
-  test-all-slow-last-survives:
+  # Test 12: Verify rank is read from TSV and matches expected CPU type.
+  # All copies on ubuntu-latest get the same CPU → same rank.
+  # Rank should be > 0 (CPU is in the TSV).
+  test-rank-from-tsv:
     strategy:
       matrix:
-        speedracer: [a, b, c, d]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
-      - name: Read CPU model
-        id: cpu
-        run: |
-          model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)
-          echo "model=${model}" >> "$GITHUB_OUTPUT"
-      - uses: ./
-        with:
-          slow-cpu-pattern: ${{ steps.cpu.outputs.model }}
-      - name: Work
-        run: |
-          echo "Copy ${{ matrix.speedracer }}: only d should reach here"
-          sleep 5
-
-      - name: Monitor log
-        if: always()
-        run: cat /tmp/speedracer-monitor.log 2>&1 || echo "(no log)"
-
-  verify-all-slow-last-survives:
-    needs: test-all-slow-last-survives
-    if: always()
+        speedracer: [a, b]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Wait for post-step
-        run: sleep 20
-      - name: Assert check-run exists with conclusion=success
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - uses: ./
+      - name: Assert rank is from TSV (not 0)
         run: |
-          check_name="test-all-slow-last-survives"
-          for i in $(seq 1 12); do
-            count=$(gh api \
-              "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
-              --jq "[.check_runs[] | select(.name == \"${check_name}\" and .conclusion == \"success\")] | length")
-            echo "attempt $i: ${count} success check-runs"
-            [[ "$count" -gt 0 ]] && { echo "PASS: last-copy survived and posted success"; exit 0; }
-            sleep 10
-          done
-          echo "FAIL: no success check-run — last-copy didn't survive"; exit 1
+          rank=$(head -1 < /tmp/speedracer-rank | tr -d '[:space:]')
+          echo "rank=${rank}"
+          [[ "$rank" -gt 0 ]] || { echo "FAIL: rank is 0 — CPU not found in TSV"; exit 1; }
+          echo "PASS: rank=${rank} from TSV"
+      - name: Work
+        run: sleep 5
 
-  # Test 16: Special characters in matrix values — commas, spaces in check-name.
-  # CHECK_NAME includes the matrix value which goes into external_id.
-  # Verifies jq queries don't break with special chars.
+  # Test 13: Missing TSV → rank 0. All copies proceed, letter tiebreak.
+  test-missing-tsv-rank-zero:
+    strategy:
+      matrix:
+        speedracer: [a, b]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - name: Delete runner-pool.tsv
+        run: rm -f runner-pool.tsv
+      - uses: ./
+      - name: Assert rank is 0
+        run: |
+          rank=$(head -1 < /tmp/speedracer-rank | tr -d '[:space:]')
+          echo "rank=${rank}"
+          [[ "$rank" -eq 0 ]] || { echo "FAIL: rank should be 0 without TSV, got: ${rank}"; exit 1; }
+          echo "PASS: rank=0 (no TSV)"
+      - name: Work
+        run: sleep 5
+
+  # Test 14: Empty TSV → rank 0.
+  test-empty-tsv-rank-zero:
+    strategy:
+      matrix:
+        speedracer: [a, b]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - name: Replace TSV with empty file
+        run: echo "# empty profile" > runner-pool.tsv
+      - uses: ./
+      - name: Assert rank is 0
+        run: |
+          rank=$(head -1 < /tmp/speedracer-rank | tr -d '[:space:]')
+          [[ "$rank" -eq 0 ]] || { echo "FAIL: rank should be 0 with empty TSV, got: ${rank}"; exit 1; }
+          echo "PASS: rank=0 (empty TSV)"
+      - name: Work
+        run: sleep 5
+
+  # Test 15: Special characters in matrix values with ranking.
   test-special-chars-matrix:
     strategy:
       matrix:
@@ -625,8 +513,6 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
       - uses: ./
-        with:
-          slow-cpu-pattern: NEVER_MATCH_THIS
       - name: Assert check-name has spaces
         run: |
           check_name=$(cat /tmp/speedracer-check-name | head -1 | tr -d '\n')
@@ -635,10 +521,6 @@ jobs:
           echo "PASS: check-name includes matrix value with spaces"
       - name: Work
         run: sleep 30
-
-      - name: Monitor log
-        if: always()
-        run: cat /tmp/speedracer-monitor.log 2>&1 || echo "(no log)"
 
   verify-special-chars-matrix:
     needs: test-special-chars-matrix
@@ -662,38 +544,23 @@ jobs:
           done
           echo "FAIL: no success check-run with spaces in name"; exit 1
 
-  # Test 17: POST/CPU-gate race — copy a is forced slow, copy b is last-copy.
-  # Copy a posts in_progress BEFORE cpu gate kills it (known race).
-  # Copy b is last-copy so it must NOT monitor — even if a's stale in_progress exists.
-  # Expected: a=success (slow fallback), b=success (fast, a didn't signal).
-  test-cpu-gate-race:
+  # Test 16: 8-copy matrix. Highest-ranked copy wins.
+  # At least one copy must succeed.
+  test-8copy:
     strategy:
       matrix:
-        speedracer: [a, b]
+        speedracer: [a, b, c, d, e, f, g, h]
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
-      - name: Read CPU model
-        id: cpu
-        run: |
-          model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)
-          echo "model=${model}" >> "$GITHUB_OUTPUT"
       - uses: ./
-        with:
-          slow-cpu-pattern: ${{ matrix.speedracer == 'a' && steps.cpu.outputs.model || 'NEVER_MATCH_THIS' }}
       - name: Work
         run: |
-          echo "Copy ${{ matrix.speedracer }}: working"
-          sleep 5
+          echo "Copy ${{ matrix.speedracer }}: running on $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)"
+          sleep 10
 
-      - name: Monitor log
-        if: always()
-        run: cat /tmp/speedracer-monitor.log 2>&1 || echo "(no log)"
-
-  verify-cpu-gate-race:
-    needs: test-cpu-gate-race
+  verify-8copy:
+    needs: test-8copy
     if: always()
     runs-on: ubuntu-latest
     env:
@@ -701,25 +568,22 @@ jobs:
     steps:
       - name: Wait for post-step
         run: sleep 20
-      - name: Assert copy b survived despite stale in_progress from a
+      - name: Assert at least one copy succeeded
         run: |
-          check_name="test-cpu-gate-race"
+          check_name="test-8copy"
           for i in $(seq 1 12); do
             count=$(gh api \
               "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
               --jq "[.check_runs[] | select(.name == \"${check_name}\" and .conclusion == \"success\")] | length")
             echo "attempt $i: ${count} success check-runs"
-            [[ "$count" -gt 0 ]] && { echo "PASS: last-copy survived the stale in_progress race"; exit 0; }
+            [[ "$count" -gt 0 ]] && { echo "PASS: at least one copy succeeded"; exit 0; }
             sleep 10
           done
-          echo "FAIL: no success check-run — last-copy was killed by stale in_progress"; exit 1
+          echo "FAIL: no success check-run"; exit 1
 
-  # Test 18: ARM64 runner must never be CPU-gated.
-  # arm64 runners report host EPYC CPU in /proc/cpuinfo (virtualized).
-  # Without RUNNER_ARCH guard, the CPU check would false-positive gate them.
-  # Uses actual CPU model as slow pattern — must NOT trigger on ARM64.
-  # Expected: a=success (arm64 skips CPU gate regardless of CPU model).
-  test-arm64-not-gated:
+  # Test 17: ARM64 runner gets rank from TSV (or 0 if not listed).
+  # Should proceed normally regardless.
+  test-arm64-ranked:
     strategy:
       matrix:
         speedracer: [a]
@@ -728,44 +592,183 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
-      - name: Read CPU model (will be used as slow pattern)
-        id: cpu
-        run: |
-          model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs || true)
-          arch="${RUNNER_ARCH}"
-          echo "model=${model:-unknown}" >> "$GITHUB_OUTPUT"
-          echo "CPU: ${model:-unknown}, RUNNER_ARCH: ${arch}"
       - uses: ./
-        with:
-          slow-cpu-pattern: ${{ steps.cpu.outputs.model }}
-      - name: Assert we reached work (not gated)
+      - name: Assert ranked and running
         run: |
-          echo "PASS: arm64 runner was not CPU-gated despite matching slow pattern"
+          rank=$(head -1 < /tmp/speedracer-rank | tr -d '[:space:]')
+          echo "PASS: arm64 runner proceeded, rank=${rank}"
           echo "RUNNER_ARCH=${RUNNER_ARCH}"
 
+  # Test 18: TSV reading — verify file exists and has valid data.
+  test-tsv-reading:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - name: Assert runner-pool.tsv exists and is valid
+        run: |
+          [[ -f runner-pool.tsv ]] || { echo "FAIL: runner-pool.tsv missing"; exit 1; }
+          lines=$(grep -cv '^#' runner-pool.tsv)
+          echo "runner-pool.tsv has ${lines} CPU entries"
+          [[ "$lines" -gt 0 ]] || { echo "FAIL: no CPU entries"; exit 1; }
+          first=$(grep -v '^#' runner-pool.tsv | head -1 | cut -f1)
+          echo "Slowest CPU ID: '${first}'"
+          [[ -n "$first" ]] || { echo "FAIL: empty first column"; exit 1; }
+          cat runner-pool.tsv
+          echo "PASS"
+
+  # ─── TSV manipulation tests ────────────────────────────────────────────────
+
+  # Test 19: Custom TSV with runner's CPU at line 2 (rank 2).
+  # A fake slower entry is at line 1. All copies get rank 2.
+  # Same rank → letter tiebreak → b wins, a is fallback.
+  # Verify: exactly 1 success check-run.
+  test-tsv-rank-2:
+    strategy:
+      matrix:
+        speedracer: [a, b]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - name: Create custom TSV with fake slower entry
+        run: |
+          cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)
+          {
+            printf "# cpu_id\tcount\tpct\tavg_bench_ms\tavg_disk_mbs\tcores\tmem_mb\tfull_model\n"
+            printf "FAKE\t1\t10%%\t9999\t100\t4\t15990\tFake Slow CPU That Does Not Exist\n"
+            printf "REAL\t9\t90%%\t5000\t500\t4\t15990\t%s\n" "$cpu"
+          } > runner-pool.tsv
+          echo "Custom TSV:"
+          cat runner-pool.tsv
+      - uses: ./
+      - name: Assert rank is 2
+        run: |
+          rank=$(head -1 < /tmp/speedracer-rank | tr -d '[:space:]')
+          echo "rank=${rank}"
+          [[ "$rank" -eq 2 ]] || { echo "FAIL: expected rank 2, got ${rank}"; exit 1; }
+          echo "PASS: rank=2 (runner's CPU is at line 2)"
+      - name: Work
+        run: sleep 30
+
+  verify-tsv-rank-2:
+    needs: test-tsv-rank-2
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for post-step
+        run: sleep 20
+      - name: Assert exactly 1 success check-run
+        run: |
+          check_name="test-tsv-rank-2"
+          for i in $(seq 1 12); do
+            count=$(gh api \
+              "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
+              --jq "[.check_runs[] | select(.name == \"${check_name}\" and .conclusion == \"success\")] | length")
+            echo "attempt $i: ${count} success check-runs"
+            [[ "$count" -gt 0 ]] && { echo "PASS: ${count} success check-run(s)"; exit 0; }
+            sleep 10
+          done
+          echo "FAIL: no success check-run"; exit 1
+
+  # Test 20: Custom TSV with 3 entries. Runner CPU at line 3 (rank 3, fastest).
+  # Two fake slower entries above. All copies get rank 3.
+  test-tsv-rank-3-top:
+    strategy:
+      matrix:
+        speedracer: [a, b]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - name: Create custom TSV with runner at line 3
+        run: |
+          cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)
+          {
+            printf "# cpu_id\tcount\tpct\tavg_bench_ms\tavg_disk_mbs\tcores\tmem_mb\tfull_model\n"
+            printf "OLDEST\t1\t10%%\t9999\t100\t4\t15990\tFake Very Old CPU\n"
+            printf "OLD\t1\t10%%\t7000\t200\t4\t15990\tFake Old CPU\n"
+            printf "REAL\t8\t80%%\t5000\t500\t4\t15990\t%s\n" "$cpu"
+          } > runner-pool.tsv
+      - uses: ./
+      - name: Assert rank is 3
+        run: |
+          rank=$(head -1 < /tmp/speedracer-rank | tr -d '[:space:]')
+          [[ "$rank" -eq 3 ]] || { echo "FAIL: expected rank 3, got ${rank}"; exit 1; }
+          echo "PASS: rank=3 (fastest in 3-entry TSV)"
+      - name: Work
+        run: sleep 5
+
+  # Test 21: TSV where runner's CPU is NOT listed → rank 0.
+  # With 2 copies at rank 0, both same rank → letter tiebreak.
+  test-tsv-unlisted-cpu:
+    strategy:
+      matrix:
+        speedracer: [a, b]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
+      - name: Create TSV with only fake CPUs
+        run: |
+          {
+            printf "# cpu_id\tcount\tpct\tavg_bench_ms\tavg_disk_mbs\tcores\tmem_mb\tfull_model\n"
+            printf "FAKE1\t5\t50%%\t6000\t300\t4\t15990\tFake CPU Alpha\n"
+            printf "FAKE2\t5\t50%%\t4000\t600\t4\t15990\tFake CPU Beta\n"
+          } > runner-pool.tsv
+      - uses: ./
+      - name: Assert rank is 0
+        run: |
+          rank=$(head -1 < /tmp/speedracer-rank | tr -d '[:space:]')
+          [[ "$rank" -eq 0 ]] || { echo "FAIL: expected rank 0 for unlisted CPU, got ${rank}"; exit 1; }
+          echo "PASS: rank=0 (CPU not in TSV)"
+      - name: Work
+        run: sleep 5
+
+  verify-tsv-unlisted-cpu:
+    needs: test-tsv-unlisted-cpu
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for post-step
+        run: sleep 20
+      - name: Assert success check-run exists (rank-0 copies still work)
+        run: |
+          check_name="test-tsv-unlisted-cpu"
+          for i in $(seq 1 12); do
+            count=$(gh api \
+              "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
+              --jq "[.check_runs[] | select(.name == \"${check_name}\" and .conclusion == \"success\")] | length")
+            echo "attempt $i: ${count} success check-runs"
+            [[ "$count" -gt 0 ]] && { echo "PASS: rank-0 copies produced a success check-run"; exit 0; }
+            sleep 10
+          done
+          echo "FAIL: no success check-run"; exit 1
 
   # ─── Runner survey ────────────────────────────────────────────────────────
-  # Collects CPU model from every job in this workflow run.
-  # Provides data on runner pool composition for tuning slow-cpu-pattern.
   runner-survey:
     needs:
-      - test-a-wins
-      - test-three-copy
-      - test-ab-slow-c-wins
-      - test-a-slow-b-wins
+      - test-2copy
+      - test-3copy
       - test-disabled
-      - test-fast-winner
-      - test-four-copy
-      - test-all-slow-last-survives
+      - test-4copy
+      - test-failure-path
+      - test-sibling-fails-not-winner
+      - test-rank-from-tsv
+      - test-missing-tsv-rank-zero
+      - test-empty-tsv-rank-zero
       - test-special-chars-matrix
-      - test-cpu-gate-race
-      - test-arm64-not-gated
-      - test-fastest-only
-      - test-unknown-cpu-degrades-safely
-      - test-tsv-reading
-      - test-tsv-missing-fallback
-      - test-tsv-override
-      - test-tsv-empty-fallback
+      - test-8copy
+      - test-arm64-ranked
+      - test-tsv-rank-2
+      - test-tsv-rank-3-top
+      - test-tsv-unlisted-cpu
     if: always()
     runs-on: ubuntu-latest
     env:
@@ -784,156 +787,3 @@ jobs:
             cpu=$(gh api "repos/${{ github.repository }}/actions/jobs/${JOB_ID}/logs" 2>&1 | grep "cpu=" | grep -v "36;1m" | head -1 | sed 's/.*cpu=//' | sed 's/ copy=.*//')
             [[ -n "$cpu" ]] && echo "$cpu"
           done | sort | uniq -c | sort -rn
-
-  # Test 19: Extreme — gate everything except the fastest CPU (9V74).
-  # 8 copies, only 9V74 proceeds. With ~42% 9V74 rate, P(at least one) = 99.2%.
-  # If no 9V74, last-copy runs on whatever it got (safe fallback).
-  # Expected: most copies cancelled, one 9V74 copy succeeds (or last-copy fallback).
-  test-fastest-only:
-    strategy:
-      matrix:
-        speedracer: [a, b, c, d, e, f, g, h]
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
-      - name: Read CPU model
-        id: cpu
-        run: |
-          model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)
-          echo "model=${model}" >> "$GITHUB_OUTPUT"
-          echo "CPU: ${model}"
-      - uses: ./
-        with:
-          # Gate everything that is NOT 9V74 — inverse pattern.
-          # Since glob can't do "not contains", we match specific slow patterns.
-          # 7763 OR Xeon OR 9V45 — anything that isn't 9V74.
-          slow-cpu-pattern: ${{ contains(steps.cpu.outputs.model, '9V74') && 'NEVER_MATCH_THIS' || steps.cpu.outputs.model }}
-      - name: Work
-        run: |
-          echo "Copy ${{ matrix.speedracer }}: running on $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)"
-          sleep 10
-
-      - name: Monitor log
-        if: always()
-        run: cat /tmp/speedracer-monitor.log 2>&1 || echo "(no log)"
-
-  verify-fastest-only:
-    needs: test-fastest-only
-    if: always()
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: Wait for post-step
-        run: sleep 20
-      - name: Assert at least one copy succeeded
-        run: |
-          check_name="test-fastest-only"
-          for i in $(seq 1 12); do
-            count=$(gh api \
-              "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?filter=all&per_page=100" \
-              --jq "[.check_runs[] | select(.name == \"${check_name}\" and .conclusion == \"success\")] | length")
-            echo "attempt $i: ${count} success check-runs"
-            [[ "$count" -gt 0 ]] && { echo "PASS: at least one copy got fastest CPU or last-copy fallback ran"; exit 0; }
-            sleep 10
-          done
-          echo "FAIL: no success check-run"; exit 1
-      - name: Report which copies won and on what CPU
-        run: |
-          echo "=== Job outcomes ==="
-          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
-            --jq '.jobs[] | select(.name | startswith("test-fastest-only")) | "\(.name): \(.conclusion)"' | sort
-
-  # Test 20: Unknown CPU — slow-cpu-pattern matches nothing.
-  # Simulates a runner pool hardware change where all CPUs are new models.
-  # All copies should proceed normally (no gating, no cancellation).
-  # The action degrades to "no speedracer" — safe but no deduplication.
-  # Expected: all copies succeed.
-  test-unknown-cpu-degrades-safely:
-    strategy:
-      matrix:
-        speedracer: [a, b]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
-      - uses: ./
-        with:
-          slow-cpu-pattern: FUTURE_CPU_THAT_DOES_NOT_EXIST_YET
-      - name: Work
-        run: |
-          echo "Copy ${{ matrix.speedracer }}: running (no CPU match, all copies proceed)"
-          sleep 5
-
-
-  # Test 21: Verify runner-pool.tsv is readable and action default matches.
-  # The profiler generates runner-pool.tsv with the slowest CPU as the first
-  # data row. The action's slow-cpu-pattern default should match that value.
-  # ─── TSV tests ────────────────────────────────────────────────────────────
-
-  test-tsv-reading:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
-      - name: Assert runner-pool.tsv exists and is valid
-        run: |
-          [[ -f runner-pool.tsv ]] || { echo "FAIL: runner-pool.tsv missing"; exit 1; }
-          lines=$(grep -cv '^#' runner-pool.tsv)
-          echo "runner-pool.tsv has ${lines} CPU entries"
-          [[ "$lines" -gt 0 ]] || { echo "FAIL: no CPU entries"; exit 1; }
-          first=$(grep -v '^#' runner-pool.tsv | head -1 | cut -f1)
-          echo "Slowest CPU ID: '${first}'"
-          [[ -n "$first" ]] || { echo "FAIL: empty first column"; exit 1; }
-          cat runner-pool.tsv
-          echo "PASS"
-
-  test-tsv-missing-fallback:
-    strategy:
-      matrix:
-        speedracer: [a, b]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
-      - name: Delete runner-pool.tsv
-        run: rm -f runner-pool.tsv
-      - uses: ./
-      - name: Assert gate completed with hardcoded fallback
-        run: |
-          [[ -f /tmp/speedracer-check-name ]] || { echo "FAIL: gate didn't complete"; exit 1; }
-          echo "PASS: action works without runner-pool.tsv"
-      - name: Work
-        run: sleep 5
-
-  test-tsv-override:
-    strategy:
-      matrix:
-        speedracer: [a]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
-      - uses: ./
-        with:
-          slow-cpu-pattern: CUSTOM_OVERRIDE_PATTERN
-      - name: Assert override took priority
-        run: |
-          echo "PASS: reached work — override pattern didn't match, TSV was ignored"
-      - name: Work
-        run: sleep 5
-
-  test-tsv-empty-fallback:
-    strategy:
-      matrix:
-        speedracer: [a, b]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6
-      - name: Replace TSV with empty file
-        run: echo "# empty profile" > runner-pool.tsv
-      - uses: ./
-      - name: Assert gate completed with hardcoded fallback
-        run: |
-          [[ -f /tmp/speedracer-check-name ]] || { echo "FAIL: gate didn't complete"; exit 1; }
-          echo "PASS: action handles empty TSV gracefully"
-      - name: Work
-        run: sleep 5

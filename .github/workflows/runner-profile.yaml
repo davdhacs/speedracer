@@ -7,6 +7,11 @@ on:
   schedule:
     - cron: '37 9 * * 1'  # weekly Monday 9:37 UTC
   workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Show what would change without committing'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -77,9 +82,10 @@ jobs:
           path: /tmp/profiles
           merge-multiple: true
 
-      - name: Merge profiles and commit
+      - name: Merge profiles and update runner-pool.tsv
         run: |
-          DATE=$(date -u +%Y-%m-%d)
+          date=$(date -u +%Y-%m-%d)
+          sample_count=$(ls /tmp/profiles/runner-*.json 2>/dev/null | wc -l | tr -d ' ')
 
           # Merge all profile JSONs
           echo "[" > /tmp/merged.json
@@ -92,33 +98,103 @@ jobs:
           done
           echo "]" >> /tmp/merged.json
 
-          # Generate runner-pool.tsv: tab-separated, slowest first (by benchmark)
-          # First column is the short CPU ID (for use as slow-cpu-pattern value).
-          # Columns: cpu_id, count, pct, avg_bench_ms, avg_disk_mbs, cores, mem_mb, full_model
+          # Build fresh data from this run: one JSON object per CPU type, sorted slowest-first.
+          jq -r --argjson n "$sample_count" '
+            group_by(.cpu) |
+            map({
+              full: .[0].cpu,
+              id: (.[0].cpu | gsub("AMD EPYC "; "") | gsub("Intel\\(R\\) Xeon\\(R\\) "; "") | gsub(" \\d+-Core Processor"; "") | gsub(" CPU @ .*"; "")),
+              count: length,
+              pct: "\(length * 100 / $n)%",
+              avg_ms: ([.[].cpu_bench_ms] | add / length | round),
+              avg_disk: ([.[].disk_write_mbs | tonumber? // 0] | add / length | round),
+              cores: .[0].cores,
+              mem_mb: .[0].mem_mb
+            }) |
+            sort_by(-.avg_ms)
+          ' /tmp/merged.json > /tmp/fresh.json
+
+          echo "=== Fresh profile (this run) ==="
+          jq -r '.[] | "\(.id)\t\(.count)\t\(.pct)\t\(.avg_ms)\t\(.avg_disk)\t\(.cores)\t\(.mem_mb)\t\(.full)"' /tmp/fresh.json
+
+          # Parse old TSV into JSON (skip comment lines)
+          if [[ -f runner-pool.tsv ]]; then
+            grep -v '^#' runner-pool.tsv | jq -Rn '
+              [inputs | split("\t") | select(length >= 8) | {
+                id: .[0], count: (.[1] | tonumber), pct: .[2],
+                avg_ms: (.[3] | tonumber), avg_disk: (.[4] | tonumber),
+                cores: (.[5] | tonumber), mem_mb: (.[6] | tonumber), full: .[7]
+              }]
+            ' > /tmp/old.json
+          else
+            echo '[]' > /tmp/old.json
+          fi
+
+          old_order=$(jq -r '[.[].id] | join(",")' /tmp/old.json)
+          old_count=$(jq 'length' /tmp/old.json)
+
+          # Merge: update seen types with fresh data, keep unseen as-is, add new
+          jq -n --slurpfile old /tmp/old.json --slurpfile fresh /tmp/fresh.json '
+            ($old[0] | map(.id)) as $old_ids |
+            [
+              ($old[0][] | . as $entry |
+                ([$fresh[0][] | select(.id == $entry.id)][0] // null) as $match |
+                if $match then $match else $entry end
+              ),
+              ($fresh[0][] | select(.id as $id | $old_ids | index($id) | not))
+            ] |
+            sort_by(-.avg_ms) |
+            [.[] | {
+              id, full,
+              count: (.count | tostring),
+              pct: (if .pct then .pct else "\(.count)/?%" end),
+              avg_ms: (.avg_ms | tostring),
+              avg_disk: (.avg_disk | tostring),
+              cores: (.cores | tostring),
+              mem_mb: (.mem_mb | tostring)
+            }]
+          ' > /tmp/merged_entries.json
+
+          new_order=$(jq -r '[.[].id] | join(",")' /tmp/merged_entries.json)
+          new_count=$(jq 'length' /tmp/merged_entries.json)
+
+          # Write final TSV
           {
             echo "# cpu_id	count	pct	avg_bench_ms	avg_disk_mbs	cores	mem_mb	full_model"
-            jq -r '
-              group_by(.cpu) |
-              map({
-                full: .[0].cpu,
-                id: (.[0].cpu | gsub("AMD EPYC "; "") | gsub("Intel\\(R\\) Xeon\\(R\\) "; "") | gsub(" \\d+-Core Processor"; "") | gsub(" CPU @ .*"; "")),
-                count: length,
-                avg_ms: ([.[].cpu_bench_ms] | add / length | round),
-                avg_disk: ([.[].disk_write_mbs | tonumber? // 0] | add / length | round),
-                cores: .[0].cores,
-                mem_mb: .[0].mem_mb
-              }) |
-              sort_by(-.avg_ms) |
-              .[] |
-              "\(.id)\t\(.count)\t\(.count * 100 / 10)%\t\(.avg_ms)\t\(.avg_disk)\t\(.cores)\t\(.mem_mb)\t\(.full)"
-            ' /tmp/merged.json
+            jq -r '.[] | "\(.id)\t\(.count)\t\(.pct)\t\(.avg_ms)\t\(.avg_disk)\t\(.cores)\t\(.mem_mb)\t\(.full)"' /tmp/merged_entries.json
           } > runner-pool.tsv
 
           echo "=== runner-pool.tsv ==="
           cat runner-pool.tsv
+          echo "old: ${old_count} entries [${old_order}]"
+          echo "new: ${new_count} entries [${new_order}]"
+
+          # --- Commit only if entry count or ordering changed ---
+          changed=false
+          if [[ "$old_order" != "$new_order" || "$old_count" != "$new_count" ]]; then
+            changed=true
+          fi
+
+          if [[ "${{ inputs.dry-run }}" == "true" ]]; then
+            echo "=== DRY RUN ==="
+            if $changed; then
+              echo "WOULD COMMIT: order/count changed"
+            else
+              echo "WOULD SKIP: same entries in same order"
+            fi
+            exit 0
+          fi
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add runner-pool.tsv
-          git diff --cached --quiet || git commit -m "data: runner pool profile ${DATE}"
-          git push || echo "::warning::Failed to push profile data"
+
+          if $changed; then
+            git diff --cached --quiet || {
+              git commit -m "data: runner pool profile ${date} (${new_order})"
+              git push || echo "::warning::Failed to push profile data"
+            }
+          else
+            echo "No ranking changes (same entries, same order) — skipping commit"
+            git checkout -- runner-pool.tsv 2>/dev/null || true
+          fi
