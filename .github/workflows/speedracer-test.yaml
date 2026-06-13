@@ -140,7 +140,7 @@ jobs:
           echo "check_id=${check_id} status=${status} external_id=${ext_id}"
           [[ "$status" == "in_progress" ]] || { echo "FAIL: expected in_progress, got: ${status}"; exit 1; }
           # Verify rank segment in external_id: spec-{letter}-r{rank}-...
-          [[ "$ext_id" =~ ^spec-[a-z]-r[0-9]+-${{ github.run_id }}- ]] || {
+          [[ "$ext_id" =~ ^spec-r[0-9]+-[a-z]-${{ github.run_id }}- ]] || {
             echo "FAIL: external_id format wrong: ${ext_id}"; exit 1
           }
           echo "PASS: check-run posted with rank in external_id"
