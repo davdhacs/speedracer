@@ -117,7 +117,7 @@ jobs:
             (map(select(.pct_num >= 20))) as $common |
             (if ($common | length) > 1 then $common else . end) |
             map(del(.pct_num)) |
-            sort_by(-.avg_ms)
+            sort_by(.avg_disk)
           ' /tmp/merged.json > /tmp/fresh.json
 
           echo "=== Fresh profile (this run) ==="
@@ -166,7 +166,7 @@ jobs:
               ),
               $new_entries[]
             ] |
-            sort_by(-.avg_ms) |
+            sort_by(.avg_disk) |
 
             # Format for output
             { pruned: $prune.pruned,
