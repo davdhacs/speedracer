@@ -44,62 +44,62 @@ runs:
           exit 0
         fi
 
-        MY_COPY="${{ matrix.speedracer }}"
-        RUN_ID="${{ github.run_id }}"
-        REPO="${{ github.repository }}"
+        my_copy="${{ matrix.speedracer }}"
+        run_id="${{ github.run_id }}"
+        repo="${{ github.repository }}"
 
         # Validate: speedracer values must be single lowercase letters
-        if [[ ! "$MY_COPY" =~ ^[a-z]$ ]]; then
-          echo "::error::Invalid speedracer value '${MY_COPY}'. Use single lowercase letters: a, b, c, ..."
+        if [[ ! "$my_copy" =~ ^[a-z]$ ]]; then
+          echo "::error::Invalid speedracer value '${my_copy}'. Use single lowercase letters: a, b, c, ..."
           exit 1
         fi
 
-        CHECK_NAME="${{ inputs.check-name }}"
-        if [[ -z "$CHECK_NAME" ]]; then
-          MATRIX_JSON='${{ toJSON(matrix) }}'
-          OTHER_VALS=$(echo "$MATRIX_JSON" | \
+        check_name="${{ inputs.check-name }}"
+        if [[ -z "$check_name" ]]; then
+          matrix_json='${{ toJSON(matrix) }}'
+          other_vals=$(echo "$matrix_json" | \
             jq -r 'del(.speedracer) | to_entries | map(.value | tostring) | join(", ")')
-          if [[ -n "$OTHER_VALS" ]]; then
-            CHECK_NAME="${{ github.job }} ($OTHER_VALS)"
+          if [[ -n "$other_vals" ]]; then
+            check_name="${{ github.job }} ($other_vals)"
           else
-            CHECK_NAME="${{ github.job }}"
+            check_name="${{ github.job }}"
           fi
-          echo "Auto-derived check-name: $CHECK_NAME"
+          echo "Auto-derived check-name: $check_name"
         fi
 
         # ── 1. Rank lookup ──────────────────────────────────────────────────
         cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs || true)
         [[ -z "$cpu" ]] && cpu=$(lscpu | awk -F: '/Model name/{gsub(/^ +/,"",$2); print $2}' || true)
 
-        MY_RANK=0
+        my_rank=0
         if [[ -f "${GITHUB_ACTION_PATH}/runner-pool.tsv" ]]; then
           line_num=0
           while IFS=$'\t' read -r _ _ _ _ _ _ _ full_model; do
             line_num=$((line_num + 1))
             if [[ "$cpu" == *"$full_model"* || "$full_model" == *"$cpu"* ]]; then
-              MY_RANK=$line_num
+              my_rank=$line_num
               break
             fi
           done < <(grep -v '^#' "${GITHUB_ACTION_PATH}/runner-pool.tsv")
         fi
 
-        echo "cpu=${cpu:-unknown} copy=${MY_COPY} rank=${MY_RANK}"
+        echo "cpu=${cpu:-unknown} copy=${my_copy} rank=${my_rank}"
 
-        EXT_ID="spec-${MY_COPY}-r${MY_RANK}-${RUN_ID}-${CHECK_NAME}"
+        ext_id="spec-${my_copy}-r${my_rank}-${run_id}-${check_name}"
 
         # ── 2. Post in_progress check-run ───────────────────────────────────
-        check_id=$(gh api repos/"${REPO}"/check-runs \
-          -f name="${CHECK_NAME}" \
+        check_id=$(gh api repos/"${repo}"/check-runs \
+          -f name="${check_name}" \
           -f head_sha="${{ github.sha }}" \
           -f status=in_progress \
-          -f external_id="${EXT_ID}" \
+          -f external_id="${ext_id}" \
           --jq '.id')
         printf '%s\n' "${check_id:-}" > /tmp/speedracer-check-id
-        echo "Posted in_progress check-run ${check_id} (${EXT_ID})"
+        echo "Posted in_progress check-run ${check_id} (${ext_id})"
 
-        printf '%s\n' "${CHECK_NAME}" > /tmp/speedracer-check-name
-        printf '%s\n' "${MY_COPY}" > /tmp/speedracer-copy
-        printf '%s\n' "${MY_RANK}" > /tmp/speedracer-rank
+        printf '%s\n' "${check_name}" > /tmp/speedracer-check-name
+        printf '%s\n' "${my_copy}" > /tmp/speedracer-copy
+        printf '%s\n' "${my_rank}" > /tmp/speedracer-rank
 
         # ── 3. Poll for higher-ranked siblings ──────────────────────────────
         # Higher rank wins. Same rank → higher letter wins.
@@ -109,9 +109,9 @@ runs:
         deadline=$(( $(date +%s) + 5 ))
         while [[ $(date +%s) -lt $deadline ]]; do
           response=$(gh api \
-            "repos/${REPO}/commits/${{ github.sha }}/check-runs?per_page=100&filter=all")
+            "repos/${repo}/commits/${{ github.sha }}/check-runs?per_page=100&filter=all")
 
-          siblings=$(echo "$response" | jq -r --arg run "$RUN_ID" --arg name "$CHECK_NAME" \
+          siblings=$(echo "$response" | jq -r --arg run "$run_id" --arg name "$check_name" \
             '[.check_runs[]
               | select(.external_id | startswith("spec-"))
               | select(.external_id | contains("-" + $run + "-" + $name))
@@ -120,13 +120,13 @@ runs:
             ] | .[]')
 
           for sid in $siblings; do
-            [[ "$sid" == "$EXT_ID" ]] && continue
+            [[ "$sid" == "$ext_id" ]] && continue
 
             sib_letter=$(echo "$sid" | cut -d- -f2)
             sib_rank=$(echo "$sid" | cut -d- -f3 | tr -d 'r')
 
-            if [[ "$sib_rank" -gt "$MY_RANK" ]] || \
-               [[ "$sib_rank" -eq "$MY_RANK" && "$sib_letter" > "$MY_COPY" ]]; then
+            if [[ "$sib_rank" -gt "$my_rank" ]] || \
+               [[ "$sib_rank" -eq "$my_rank" && "$sib_letter" > "$my_copy" ]]; then
               echo "Higher-priority sibling ${sid} (rank=${sib_rank}, letter=${sib_letter}) — cancelling."
               kill -TERM "$PPID"
               sleep 600

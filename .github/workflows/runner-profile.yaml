@@ -84,8 +84,8 @@ jobs:
 
       - name: Merge profiles and update runner-pool.tsv
         run: |
-          DATE=$(date -u +%Y-%m-%d)
-          SAMPLE_COUNT=$(ls /tmp/profiles/runner-*.json 2>/dev/null | wc -l | tr -d ' ')
+          date=$(date -u +%Y-%m-%d)
+          sample_count=$(ls /tmp/profiles/runner-*.json 2>/dev/null | wc -l | tr -d ' ')
 
           # Merge all profile JSONs
           echo "[" > /tmp/merged.json
@@ -99,7 +99,7 @@ jobs:
           echo "]" >> /tmp/merged.json
 
           # Build fresh data from this run: one JSON object per CPU type, sorted slowest-first.
-          jq -r --argjson n "$SAMPLE_COUNT" '
+          jq -r --argjson n "$sample_count" '
             group_by(.cpu) |
             map({
               full: .[0].cpu,
@@ -130,8 +130,8 @@ jobs:
             echo '[]' > /tmp/old.json
           fi
 
-          OLD_ORDER=$(jq -r '[.[].id] | join(",")' /tmp/old.json)
-          OLD_COUNT=$(jq 'length' /tmp/old.json)
+          old_order=$(jq -r '[.[].id] | join(",")' /tmp/old.json)
+          old_count=$(jq 'length' /tmp/old.json)
 
           # Merge: update seen types with fresh data, keep unseen as-is, add new
           jq -n --slurpfile old /tmp/old.json --slurpfile fresh /tmp/fresh.json '
@@ -155,8 +155,8 @@ jobs:
             }]
           ' > /tmp/merged_entries.json
 
-          NEW_ORDER=$(jq -r '[.[].id] | join(",")' /tmp/merged_entries.json)
-          NEW_COUNT=$(jq 'length' /tmp/merged_entries.json)
+          new_order=$(jq -r '[.[].id] | join(",")' /tmp/merged_entries.json)
+          new_count=$(jq 'length' /tmp/merged_entries.json)
 
           # Write final TSV
           {
@@ -166,18 +166,18 @@ jobs:
 
           echo "=== runner-pool.tsv ==="
           cat runner-pool.tsv
-          echo "old: ${OLD_COUNT} entries [${OLD_ORDER}]"
-          echo "new: ${NEW_COUNT} entries [${NEW_ORDER}]"
+          echo "old: ${old_count} entries [${old_order}]"
+          echo "new: ${new_count} entries [${new_order}]"
 
           # --- Commit only if entry count or ordering changed ---
-          CHANGED=false
-          if [[ "$OLD_ORDER" != "$NEW_ORDER" || "$OLD_COUNT" != "$NEW_COUNT" ]]; then
-            CHANGED=true
+          changed=false
+          if [[ "$old_order" != "$new_order" || "$old_count" != "$new_count" ]]; then
+            changed=true
           fi
 
           if [[ "${{ inputs.dry-run }}" == "true" ]]; then
             echo "=== DRY RUN ==="
-            if $CHANGED; then
+            if $changed; then
               echo "WOULD COMMIT: order/count changed"
             else
               echo "WOULD SKIP: same entries in same order"
@@ -189,9 +189,9 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add runner-pool.tsv
 
-          if $CHANGED; then
+          if $changed; then
             git diff --cached --quiet || {
-              git commit -m "data: runner pool profile ${DATE} (${NEW_ORDER})"
+              git commit -m "data: runner pool profile ${date} (${new_order})"
               git push || echo "::warning::Failed to push profile data"
             }
           else
