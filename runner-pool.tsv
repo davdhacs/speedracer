@@ -1,4 +1,4 @@
 # cpu_id	count	pct	avg_bench_ms	avg_disk_mbs	cores	mem_mb	full_model
-7763	8	80%	5206	582	4	15994	AMD EPYC 7763 64-Core Processor
-9V74	1	10%	4397	194	4	15990	AMD EPYC 9V74 80-Core Processor
-Platinum 8370C	1	10%	3832	623	4	15989	Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz
+9V74	5	50%	5559	525	4	15990	AMD EPYC 9V74 80-Core Processor
+7763	4	40%	5340	590	4	15990	AMD EPYC 7763 64-Core Processor
+Platinum 8370C	1	10%	3837	586	4	15993	Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz
